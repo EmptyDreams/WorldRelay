@@ -13,7 +13,7 @@ out/
 !**/src/**/out/
 .ai
 .codex
-AGENTS.md
+**/AGENTS.md
 
 .run/
 
