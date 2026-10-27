@@ -1,0 +1,4 @@
+{
+  "worldrelay.disconnect.player_data_confirmation_required": "Your player data is missing from this shared world. Creating new player data requires confirmation.",
+  "worldrelay.disconnect.player_data_unreadable": "Your player data in this shared world cannot be read. Joining was cancelled to protect your progress. See the host's log for details."
+}

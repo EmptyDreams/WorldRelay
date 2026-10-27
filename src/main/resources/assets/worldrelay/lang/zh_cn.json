@@ -1,0 +1,4 @@
+{
+  "worldrelay.disconnect.player_data_confirmation_required": "此共享世界中没有你的玩家数据，需要确认是否新建。",
+  "worldrelay.disconnect.player_data_unreadable": "无法读取你在此共享世界中的玩家数据。为保护进度，已取消加入，详情请查看房主日志。"
+}
