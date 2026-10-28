@@ -1,0 +1,81 @@
+package top.kmar.worldrelay.server;
+
+import java.io.IOException;
+import java.io.Reader;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Objects;
+import java.util.Properties;
+import java.util.Set;
+
+/** HTTP 服务配置；类初始化期间不读取文件或部署环境配置。 */
+public record ServerConfig(String bindAddress, int port, int maxConcurrentRequests, int shutdownGraceSeconds) {
+
+    private static final Set<String> KEYS = Set.of(
+        "http.bind-address", "http.port", "http.max-concurrent-requests", "http.shutdown-grace-seconds"
+    );
+
+    public ServerConfig {
+        Objects.requireNonNull(bindAddress, "bindAddress");
+        bindAddress = bindAddress.strip();
+        if (bindAddress.isEmpty()) {
+            throw new IllegalArgumentException("http.bind-address must not be blank");
+        }
+        if (port < 0 || port > 65535) {
+            throw new IllegalArgumentException("http.port must be between 0 and 65535");
+        }
+        if (maxConcurrentRequests < 1) {
+            throw new IllegalArgumentException("http.max-concurrent-requests must be positive");
+        }
+        if (shutdownGraceSeconds < 0) {
+            throw new IllegalArgumentException("http.shutdown-grace-seconds must not be negative");
+        }
+    }
+
+    public static ServerConfig defaults() {
+        return new ServerConfig("127.0.0.1", 8080, 32, 5);
+    }
+
+    public static ServerConfig fromArgs(String... args) throws IOException {
+        if (args.length == 0) {
+            return defaults();
+        }
+        if (args.length != 2 || !"--config".equals(args[0]) || args[1].isBlank()) {
+            throw new IllegalArgumentException("Usage: worldrelay-server [--config <path>]");
+        }
+        return load(Path.of(args[1]));
+    }
+
+    public static ServerConfig load(Path path) throws IOException {
+        Properties properties = new Properties();
+        try (Reader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
+            properties.load(reader);
+        }
+        for (String key : properties.stringPropertyNames()) {
+            if (!KEYS.contains(key)) {
+                throw new IllegalArgumentException("Unknown configuration key: " + key);
+            }
+        }
+        ServerConfig defaults = defaults();
+        return new ServerConfig(
+            properties.getProperty("http.bind-address", defaults.bindAddress()),
+            integer(properties, "http.port", defaults.port()),
+            integer(properties, "http.max-concurrent-requests", defaults.maxConcurrentRequests()),
+            integer(properties, "http.shutdown-grace-seconds", defaults.shutdownGraceSeconds())
+        );
+    }
+
+    private static int integer(Properties properties, String key, int fallback) {
+        String value = properties.getProperty(key);
+        if (value == null) {
+            return fallback;
+        }
+        try {
+            return Integer.parseInt(value.strip());
+        } catch (NumberFormatException failure) {
+            throw new IllegalArgumentException(key + " must be an integer", failure);
+        }
+    }
+
+}

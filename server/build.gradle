@@ -5,6 +5,10 @@ plugins {
 group = 'top.kmar.worldrelay'
 version = '0.1.0-SNAPSHOT'
 
+repositories {
+    mavenCentral()
+}
+
 java {
     toolchain.languageVersion = JavaLanguageVersion.of(21)
 }
@@ -16,4 +20,13 @@ application {
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
+}
+
+dependencies {
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.10.2'
+}
+
+tasks.named('test', Test).configure {
+    useJUnitPlatform()
 }
