@@ -1,6 +1,7 @@
 package top.kmar.worldrelay.server.http;
 
 import com.sun.net.httpserver.HttpExchange;
+import top.kmar.worldrelay.server.json.JsonWriter;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -47,8 +48,11 @@ public final class HttpResponses {
             requestId = UUID.randomUUID().toString();
             exchange.getResponseHeaders().set(REQUEST_ID_HEADER, requestId);
         }
-        String body = "{\"code\":" + quote(code) + ",\"message\":" + quote(message)
-            + ",\"requestId\":" + quote(requestId) + "}";
+        String body = new JsonWriter().beginObject()
+            .name("code").value(code)
+            .name("message").value(message)
+            .name("requestId").value(requestId)
+            .endObject().finish();
         bytes(exchange, status, "application/json; charset=utf-8", body.getBytes(StandardCharsets.UTF_8));
     }
 
@@ -56,34 +60,6 @@ public final class HttpResponses {
         if (status < 200 || status > 599) {
             throw new IllegalArgumentException("Expected a final HTTP status between 200 and 599");
         }
-    }
-
-    // 当前仅为统一错误响应输出 JSON；DTO 解析和通用编解码工具留待后续实现。
-    private static String quote(String value) {
-        Objects.requireNonNull(value, "value");
-        StringBuilder json = new StringBuilder("\"");
-        for (int i = 0; i < value.length(); i++) {
-            char character = value.charAt(i);
-            switch (character) {
-                case '"' -> json.append("\\\"");
-                case '\\' -> json.append("\\\\");
-                case '\b' -> json.append("\\b");
-                case '\f' -> json.append("\\f");
-                case '\n' -> json.append("\\n");
-                case '\r' -> json.append("\\r");
-                case '\t' -> json.append("\\t");
-                default -> {
-                    if (character < 0x20) {
-                        json.append("\\u00")
-                            .append(Character.forDigit(character >> 4, 16))
-                            .append(Character.forDigit(character & 15, 16));
-                    } else {
-                        json.append(character);
-                    }
-                }
-            }
-        }
-        return json.append('"').toString();
     }
 
 }
