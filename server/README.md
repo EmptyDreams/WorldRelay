@@ -3,8 +3,8 @@
 轻量中心协调服务的 Java 21 模块，与 Minecraft 模组没有代码依赖。
 
 当前已实现 HTTP 基础骨架：可配置监听、路由注册、虚拟线程请求执行、并发限制、请求 ID、
-统一错误、请求日志和关闭流程。生产入口没有注册任何接口，所有路径均返回 404。
-鉴权、完整 JSON 编解码、世界协调和存档同步尚未实现。
+统一错误、请求日志和关闭流程，并提供字符串式 JSON 读写工具。
+生产入口已注册共享世界列表假数据接口；鉴权、真实世界协调和存档同步尚未实现。
 
 ## 启动
 
@@ -38,6 +38,49 @@ http.shutdown-grace-seconds=5
 
 不指定 `--config` 时直接使用默认配置，不自动查找或创建配置文件。指定文件不存在、
 配置项未知或值不合法时启动失败并返回非零退出码。公网入口、HTTPS 和虚拟网络由部署环境管理。
+
+## 共享世界列表（假数据）
+
+`GET /api/v1/worlds` 固定返回四条共享世界摘要，无需请求体，不提供分页或筛选参数。
+默认地址为 `http://127.0.0.1:8080/api/v1/worlds`：
+
+```powershell
+Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/v1/worlds" -Method Get
+```
+
+成功返回 200，内容类型为 `application/json; charset=utf-8`。
+以下响应结构示例节选了其中一条记录，实际固定返回下表中的四条：
+
+```json
+{
+  "mock": true,
+  "worlds": [
+    {
+      "worldId": "demo-survival",
+      "name": "我们的生存世界",
+      "status": "RUNNING",
+      "hostName": "小明",
+      "playerCount": 2,
+      "lastCommittedAt": "2026-10-28T10:40:00Z"
+    }
+  ]
+}
+```
+
+| worldId | 名称 | 状态 | 房主 | 在线人数 | 最后提交时间 |
+|---|---|---|---|---|---|
+| `demo-survival` | 我们的生存世界 | `RUNNING` | 小明 | 2 | `2026-10-28T10:40:00Z` |
+| `demo-building` | 建筑练习场 | `FREE` | null | 0 | `2026-10-27T13:16:00Z` |
+| `demo-machinery` | 机械与铁路 | `RECOVERY_REQUIRED` | 小雨 | null | `2026-10-28T09:22:00Z` |
+| `demo-adventure` | 朋友的冒险 | `COMMITTING` | 阿木 | null | `2026-10-28T08:05:00Z` |
+
+`mock: true` 表示固定示例，连续请求的数据及顺序保持不变。`hostName` 无房主时为 JSON null；
+`playerCount` 无法确定时为 JSON null，无人托管时为 0；`lastCommittedAt` 是最后成功提交时间，
+采用固定 UTC 时间字符串。每个响应仍通过 `X-Request-Id` 返回独立的请求 ID。
+
+当前接口不读取真实存档，不进行鉴权或所有权操作，也未接入客户端页面。
+状态仅供展示，不代表已有可连接的房主。POST 等未注册的方法返回 405 和 `Allow: GET`；
+尾斜杠、子路径及未知路径仍返回 404。
 
 ## 路由与响应
 
@@ -78,6 +121,6 @@ http.shutdown-grace-seconds=5
 .\gradlew.bat :server:build
 ```
 
-测试通过 JDK `HttpClient` 访问环回地址的随机端口，处理器仅在测试中注册。
+HTTP 测试通过 JDK `HttpClient` 访问环回地址的随机端口，验证生产路由及测试专用处理器。
 运行时零第三方依赖，JUnit 仅用于测试。未引入反射扫描、动态加载或 GraalVM 构建任务；
 Native Image 兼容性仍需原生构建验证。
