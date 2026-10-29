@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import top.kmar.worldrelay.server.auth.UserStore;
+import top.kmar.worldrelay.server.http.BasicAuthenticationHandler;
 import top.kmar.worldrelay.server.http.HttpResponses;
 import top.kmar.worldrelay.server.json.JsonReader;
 
@@ -104,6 +105,46 @@ class WorldRelayServiceTest {
             service.start();
             HttpResponse<String> response = send(client, api(service, "/api/v1/worlds").GET().build());
             assertEquals(401, response.statusCode());
+        }
+    }
+
+    /** 验证 ping 经过生产鉴权链，成功时仅返回空响应，且不在注册端口提供。 */
+    @Test
+    void pingRequiresAuthenticationAndReturnsNoContent() throws Exception {
+        String key;
+        try (UserStore users = UserStore.open(config().usersFile())) {
+            key = users.register("ping-player");
+            assertNotNull(key);
+        }
+        try (WorldRelayService service = new WorldRelayService(config()); HttpClient client = client()) {
+            service.start();
+            HttpResponse<String> ping = send(client, api(service, "/api/v1/ping")
+                .header("Authorization", basic("ping-player", key)).GET().build());
+            assertEquals(204, ping.statusCode());
+            assertEquals("", ping.body());
+            assertEquals("no-store", ping.headers().firstValue("Cache-Control").orElseThrow());
+            assertTrue(ping.headers().firstValue(HttpResponses.REQUEST_ID_HEADER).isPresent());
+
+            for (String authorization : List.of("", "Basic invalid", basic("unknown-player", key),
+                basic("ping-player", "x".repeat(43)))) {
+                HttpRequest.Builder request = api(service, "/api/v1/ping");
+                if (!authorization.isEmpty()) {
+                    request.header("Authorization", authorization);
+                }
+                HttpResponse<String> rejected = send(client, request.GET().build());
+                assertEquals(401, rejected.statusCode());
+                assertEquals(BasicAuthenticationHandler.CHALLENGE,
+                    rejected.headers().firstValue("WWW-Authenticate").orElseThrow());
+                assertTrue(rejected.body().contains("\"code\":\"UNAUTHORIZED\""));
+            }
+
+            HttpResponse<String> wrongMethod = send(client, api(service, "/api/v1/ping")
+                .header("Authorization", basic("ping-player", key)).POST(HttpRequest.BodyPublishers.noBody()).build());
+            assertEquals(405, wrongMethod.statusCode());
+            assertEquals("GET", wrongMethod.headers().firstValue("Allow").orElseThrow());
+            HttpResponse<String> registrationPort = send(client, HttpRequest.newBuilder(
+                uri(service.registrationAddress().getPort(), "/api/v1/ping")).timeout(Duration.ofSeconds(5)).GET().build());
+            assertEquals(404, registrationPort.statusCode());
         }
     }
 

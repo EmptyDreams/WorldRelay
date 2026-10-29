@@ -1,5 +1,6 @@
 package top.kmar.worldrelay.server;
 
+import top.kmar.worldrelay.server.http.HttpResponses;
 import top.kmar.worldrelay.server.http.HttpRouter;
 import top.kmar.worldrelay.server.http.WorldListHandler;
 
@@ -40,6 +41,10 @@ public final class WorldRelayServer {
     /** 显式装配生产路由，供启动入口和集成测试共同使用。 */
     static HttpRouter createRouter() {
         HttpRouter router = new HttpRouter();
+        router.register("GET", "/api/v1/ping", exchange -> {
+            exchange.getResponseHeaders().set("Cache-Control", "no-store");
+            HttpResponses.noContent(exchange, 204);
+        });
         router.register("GET", "/api/v1/worlds", new WorldListHandler());
         return router;
     }
