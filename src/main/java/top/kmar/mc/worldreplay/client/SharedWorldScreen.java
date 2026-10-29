@@ -1,5 +1,6 @@
 package top.kmar.mc.worldreplay.client;
 
+import net.minecraft.Util;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractScrollWidget;
@@ -14,9 +15,13 @@ import net.minecraft.util.FormattedCharSequence;
 import org.jetbrains.annotations.NotNull;
 
 import javax.annotation.Nullable;
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 
 /** 共享世界列表与详情页面；当前使用示例数据，加入和新建按钮尚未接入操作。 */
 public final class SharedWorldScreen extends Screen {
@@ -30,6 +35,7 @@ public final class SharedWorldScreen extends Screen {
     private static final int SECONDARY_TEXT_COLOR = 0xFFAAAAAA;
     private static final int PANEL_COLOR = 0x90000000;
     private static final int BORDER_COLOR = 0xFF555555;
+    private static final Component HTTP_WARNING = Component.translatable("worldrelay.shared_worlds.http_warning");
 
     // TODO: 临时示例数据仅用于查看布局和状态，后续由世界列表接口替换。
     private static final Component PREVIEW_NOTICE = Component.literal("示例列表 · 世界服务尚未接入");
@@ -48,17 +54,52 @@ public final class SharedWorldScreen extends Screen {
     private PreviewWorld selectedWorld = PREVIEW_WORLDS.getFirst();
     private DetailsPanel detailsPanel;
     private Button joinButton;
+    private boolean usesHttp;
+    private int warningHeight;
+    private int settingsReadGeneration;
+    private boolean settingsRefreshPending;
 
     public SharedWorldScreen(Screen parent) {
         super(Component.translatable("worldrelay.menu.shared_worlds"));
         this.parent = parent;
     }
 
+    /** 每次进入列表（包括从设置页返回）时异步刷新传输安全提示。 */
+    @Override
+    public void added() {
+        super.added();
+        this.settingsRefreshPending = true;
+    }
+
+    private void refreshConnectionWarning(@NotNull Minecraft client) {
+        int generation = ++this.settingsReadGeneration;
+        Path file = client.gameDirectory.toPath().resolve("config/worldrelay-client.json");
+        CompletableFuture.supplyAsync(() -> {
+            try {
+                var settings = ClientConnectionSettings.load(file);
+                return !settings.serverAddress().isEmpty() && settings.usesHttp();
+            } catch (IOException e) {
+                throw new CompletionException(e);
+            }
+        }, Util.ioPool()).whenComplete((http, error) -> client.execute(() -> {
+            if (generation != this.settingsReadGeneration || client.screen != this) {
+                return;
+            }
+            boolean insecure = error == null && Boolean.TRUE.equals(http);
+            if (this.usesHttp != insecure) {
+                this.usesHttp = insecure;
+                this.rebuildWidgets();
+            }
+        }));
+    }
+
     @Override
     protected void init() {
         var client = Objects.requireNonNull(this.minecraft, "Screen must be initialized with a Minecraft client");
         int contentWidth = this.width - MARGIN * 2;
-        int contentHeight = Math.max(40, this.height - CONTENT_TOP - 54);
+        this.warningHeight = this.usesHttp ? this.font.split(HTTP_WARNING, contentWidth).size() * (this.font.lineHeight + 1) + 6 : 0;
+        int contentTop = CONTENT_TOP + this.warningHeight;
+        int contentHeight = Math.max(40, this.height - contentTop - 54);
         int listWidth = (contentWidth - COLUMN_GAP) * 3 / 5;
         int detailsX = MARGIN + listWidth + COLUMN_GAP;
         // 详情滚动条绘制在控件右侧，额外预留其占用的宽度。
@@ -71,25 +112,29 @@ public final class SharedWorldScreen extends Screen {
         Button.OnPress placeholder = button -> {};
         this.joinButton = Button.builder(Component.translatable(TRANSLATION_PREFIX + "join"), placeholder)
             .bounds(MARGIN, buttonY, buttonWidth, Button.DEFAULT_HEIGHT).build();
-        this.detailsPanel = new DetailsPanel(detailsX, CONTENT_TOP, detailsWidth, contentHeight);
-        WorldList worldList = new WorldList(MARGIN, CONTENT_TOP, listWidth, contentHeight);
+        this.detailsPanel = new DetailsPanel(detailsX, contentTop, detailsWidth, contentHeight);
+        WorldList worldList = new WorldList(MARGIN, contentTop, listWidth, contentHeight);
 
         this.addRenderableWidget(worldList);
         this.addRenderableWidget(this.detailsPanel);
         this.addRenderableWidget(this.joinButton);
         this.addRenderableWidget(Button.builder(Component.translatable(TRANSLATION_PREFIX + "create"), placeholder)
             .bounds(MARGIN + buttonWidth + buttonGap, buttonY, buttonWidth, Button.DEFAULT_HEIGHT).build());
-        int backX = MARGIN + (buttonWidth + buttonGap) * 2;
-        this.addRenderableWidget(Button.builder(CommonComponents.GUI_BACK, button -> this.onClose())
-            .bounds(backX, buttonY, buttonWidth, Button.DEFAULT_HEIGHT).build());
-        int settingsX = MARGIN + (buttonWidth + buttonGap) * 3;
+        int settingsX = MARGIN + (buttonWidth + buttonGap) * 2;
         this.addRenderableWidget(Button.builder(Component.translatable(TRANSLATION_PREFIX + "settings"),
                 button -> client.setScreen(new SharedWorldSettingsScreen(this)))
-            .bounds(settingsX, buttonY, this.width - MARGIN - settingsX, Button.DEFAULT_HEIGHT).build());
+            .bounds(settingsX, buttonY, buttonWidth, Button.DEFAULT_HEIGHT).build());
+        int backX = MARGIN + (buttonWidth + buttonGap) * 3;
+        this.addRenderableWidget(Button.builder(CommonComponents.GUI_BACK, button -> this.onClose())
+            .bounds(backX, buttonY, this.width - MARGIN - backX, Button.DEFAULT_HEIGHT).build());
 
         worldList.children().stream().filter(entry -> entry.world.equals(this.selectedWorld)).findFirst()
             .ifPresent(worldList::setSelected);
         this.setInitialFocus(worldList);
+        if (this.settingsRefreshPending) {
+            this.settingsRefreshPending = false;
+            this.refreshConnectionWarning(client);
+        }
     }
 
     @Override
@@ -98,9 +143,16 @@ public final class SharedWorldScreen extends Screen {
         graphics.drawCenteredString(this.font, this.title, this.width / 2, 12, TEXT_COLOR);
         graphics.drawCenteredString(this.font, PREVIEW_NOTICE,
             this.width / 2, 28, SECONDARY_TEXT_COLOR);
-        graphics.drawString(this.font, Component.translatable(TRANSLATION_PREFIX + "list_title"), MARGIN, 44, TEXT_COLOR);
+        if (this.usesHttp) {
+            int warningY = 44;
+            for (var line : this.font.split(HTTP_WARNING, this.width - MARGIN * 2)) {
+                graphics.drawString(this.font, line, MARGIN, warningY, 0xFFFFAA00);
+                warningY += this.font.lineHeight + 1;
+            }
+        }
+        graphics.drawString(this.font, Component.translatable(TRANSLATION_PREFIX + "list_title"), MARGIN, 44 + this.warningHeight, TEXT_COLOR);
         graphics.drawString(this.font, Component.translatable(TRANSLATION_PREFIX + "details_title"),
-            this.detailsPanel.getX(), 44, TEXT_COLOR);
+            this.detailsPanel.getX(), 44 + this.warningHeight, TEXT_COLOR);
         graphics.drawCenteredString(this.font, Component.translatable(TRANSLATION_PREFIX + "back_hint"),
             this.width / 2, this.height - 12, SECONDARY_TEXT_COLOR);
     }

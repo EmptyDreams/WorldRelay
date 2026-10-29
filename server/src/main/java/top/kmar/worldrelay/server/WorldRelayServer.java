@@ -4,6 +4,8 @@ import top.kmar.worldrelay.server.http.HttpResponses;
 import top.kmar.worldrelay.server.http.HttpRouter;
 import top.kmar.worldrelay.server.http.WorldListHandler;
 
+import java.util.concurrent.CountDownLatch;
+
 /** 独立协调服务的启动入口，负责配置、路由装配和服务生命周期。 */
 public final class WorldRelayServer {
 
@@ -15,11 +17,14 @@ public final class WorldRelayServer {
         try {
             ServerConfig config = ServerConfig.fromArgs(args);
             try (WorldRelayService server = new WorldRelayService(config)) {
+                CountDownLatch stopped = new CountDownLatch(1);
                 Thread shutdownHook = new Thread(() -> {
                     try {
                         server.close();
                     } catch (Exception failure) {
                         logger.log(System.Logger.Level.ERROR, "Unable to close WorldRelay service", failure);
+                    } finally {
+                        stopped.countDown();
                     }
                 }, "worldrelay-http-shutdown");
                 Runtime.getRuntime().addShutdownHook(shutdownHook);
@@ -31,6 +36,12 @@ public final class WorldRelayServer {
                 }
                 logger.log(System.Logger.Level.INFO, "WorldRelay HTTP listening on {0}", server.apiAddress());
                 logger.log(System.Logger.Level.INFO, "WorldRelay registration listening on {0}", server.registrationAddress());
+                // 启动后持续托管，避免 main 返回时 try-with-resources 立即关闭两个监听器。
+                try {
+                    stopped.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
             }
         } catch (Exception failure) {
             logger.log(System.Logger.Level.ERROR, "Unable to start WorldRelay HTTP server", failure);

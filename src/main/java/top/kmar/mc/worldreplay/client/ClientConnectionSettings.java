@@ -15,7 +15,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.Locale;
 
 /** 仅保存客户端连接配置；玩家名始终读取当前账号，不写入配置。 */
-public record ClientConnectionSettings(String serverDomain, int serverPort, String token) {
+public record ClientConnectionSettings(String serverAddress, int serverPort, String token) {
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     public static final int MAX_TOKEN_LENGTH = 4096;
@@ -24,7 +24,7 @@ public record ClientConnectionSettings(String serverDomain, int serverPort, Stri
         return new ClientConnectionSettings("", 443, "");
     }
 
-    /** 接受纯域名或粘贴的 HTTPS 地址；端口必须单独填写，不接受路径、凭据或查询参数。 */
+    /** 接受 HTTP / HTTPS 地址；省略协议时默认 HTTPS，端口单独填写。 */
     public static ClientConnectionSettings fromInput(String domainInput, String portInput, String tokenInput) {
         String address = domainInput.strip();
         if (address.isEmpty()) {
@@ -32,11 +32,14 @@ public record ClientConnectionSettings(String serverDomain, int serverPort, Stri
         }
 
         String domain;
+        String protocol;
         try {
             URI uri = new URI(address.contains("://") ? address : "https://" + address);
-            if (!"https".equalsIgnoreCase(uri.getScheme())) {
-                throw new ValidationException("https_required");
+            String scheme = uri.getScheme();
+            if (scheme == null || (!scheme.equalsIgnoreCase("https") && !scheme.equalsIgnoreCase("http"))) {
+                throw new ValidationException("protocol_invalid");
             }
+            protocol = scheme.toLowerCase(Locale.ROOT);
             String authority = uri.getRawAuthority();
             if (authority == null || authority.contains(":") || uri.getRawUserInfo() != null
                 || uri.getRawQuery() != null || uri.getRawFragment() != null
@@ -73,13 +76,17 @@ public record ClientConnectionSettings(String serverDomain, int serverPort, Stri
             || token.codePoints().anyMatch(c -> Character.isWhitespace(c) || Character.isISOControl(c))) {
             throw new ValidationException("token_invalid");
         }
-        return new ClientConnectionSettings(domain, port, token);
+        return new ClientConnectionSettings(protocol + "://" + domain, port, token);
     }
 
-    /** 网络层从这里取得地址，协议固定为 HTTPS。 */
+    /** 网络层使用用户选择的协议，不自动降级或升级。 */
     public URI serverUri() {
-        var checked = fromInput(serverDomain, Integer.toString(serverPort), token);
-        return URI.create("https://" + checked.serverDomain + ":" + checked.serverPort);
+        var checked = fromInput(serverAddress, Integer.toString(serverPort), token);
+        return URI.create(checked.serverAddress + ":" + checked.serverPort);
+    }
+
+    public boolean usesHttp() {
+        return "http".equals(serverUri().getScheme());
     }
 
     public static ClientConnectionSettings load(Path file) throws IOException {
@@ -88,7 +95,7 @@ public record ClientConnectionSettings(String serverDomain, int serverPort, Stri
         }
         try (var reader = Files.newBufferedReader(file)) {
             JsonObject json = GSON.fromJson(reader, JsonObject.class);
-            return fromInput(json.get("serverDomain").getAsString(), json.get("serverPort").getAsString(),
+            return fromInput(json.get("serverAddress").getAsString(), json.get("serverPort").getAsString(),
                 json.get("token").getAsString());
         } catch (RuntimeException e) {
             // 解析异常可能包含原始配置内容，不将 token 放入异常链或日志。
@@ -98,7 +105,7 @@ public record ClientConnectionSettings(String serverDomain, int serverPort, Stri
 
     /** 在同目录写完临时文件后原子替换，失败时保留已有配置；调用方应在 IO 线程执行。 */
     public void save(Path file) throws IOException {
-        var checked = fromInput(serverDomain, Integer.toString(serverPort), token);
+        var checked = fromInput(serverAddress, Integer.toString(serverPort), token);
         Path target = file.toAbsolutePath();
         Files.createDirectories(target.getParent());
         Path temporary = Files.createTempFile(target.getParent(), "worldrelay-client-", ".tmp");
@@ -114,7 +121,7 @@ public record ClientConnectionSettings(String serverDomain, int serverPort, Stri
 
     @Override
     public @NotNull String toString() {
-        return "ClientConnectionSettings[serverDomain=" + serverDomain + ", serverPort=" + serverPort + ", token=<redacted>]";
+        return "ClientConnectionSettings[serverAddress=" + serverAddress + ", serverPort=" + serverPort + ", token=<redacted>]";
     }
 
     public static final class ValidationException extends IllegalArgumentException {
