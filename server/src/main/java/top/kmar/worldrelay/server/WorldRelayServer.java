@@ -1,7 +1,6 @@
 package top.kmar.worldrelay.server;
 
 import top.kmar.worldrelay.server.http.HttpRouter;
-import top.kmar.worldrelay.server.http.WorldRelayHttpServer;
 import top.kmar.worldrelay.server.http.WorldListHandler;
 
 /** 独立协调服务的启动入口，负责配置、路由装配和服务生命周期。 */
@@ -14,17 +13,24 @@ public final class WorldRelayServer {
         System.Logger logger = System.getLogger(WorldRelayServer.class.getName());
         try {
             ServerConfig config = ServerConfig.fromArgs(args);
-            WorldRelayHttpServer server = new WorldRelayHttpServer(config, createRouter());
-            Thread shutdownHook = new Thread(server::close, "worldrelay-http-shutdown");
-            Runtime.getRuntime().addShutdownHook(shutdownHook);
-            try {
-                server.start();
-            } catch (Exception failure) {
-                server.close();
-                Runtime.getRuntime().removeShutdownHook(shutdownHook);
-                throw failure;
+            try (WorldRelayService server = new WorldRelayService(config)) {
+                Thread shutdownHook = new Thread(() -> {
+                    try {
+                        server.close();
+                    } catch (Exception failure) {
+                        logger.log(System.Logger.Level.ERROR, "Unable to close WorldRelay service", failure);
+                    }
+                }, "worldrelay-http-shutdown");
+                Runtime.getRuntime().addShutdownHook(shutdownHook);
+                try {
+                    server.start();
+                } catch (Exception failure) {
+                    Runtime.getRuntime().removeShutdownHook(shutdownHook);
+                    throw failure;
+                }
+                logger.log(System.Logger.Level.INFO, "WorldRelay HTTP listening on {0}", server.apiAddress());
+                logger.log(System.Logger.Level.INFO, "WorldRelay registration listening on {0}", server.registrationAddress());
             }
-            logger.log(System.Logger.Level.INFO, "WorldRelay HTTP listening on {0}", server.address());
         } catch (Exception failure) {
             logger.log(System.Logger.Level.ERROR, "Unable to start WorldRelay HTTP server", failure);
             System.exit(1);

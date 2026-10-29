@@ -10,10 +10,12 @@ import java.util.Properties;
 import java.util.Set;
 
 /** HTTP 服务配置；类初始化期间不读取文件或部署环境配置。 */
-public record ServerConfig(String bindAddress, int port, int maxConcurrentRequests, int shutdownGraceSeconds) {
+public record ServerConfig(String bindAddress, int port, int maxConcurrentRequests, int shutdownGraceSeconds,
+                           int registrationPort, Path usersFile) {
 
     private static final Set<String> KEYS = Set.of(
-        "http.bind-address", "http.port", "http.max-concurrent-requests", "http.shutdown-grace-seconds"
+        "http.bind-address", "http.port", "http.max-concurrent-requests", "http.shutdown-grace-seconds",
+        "registration.port", "auth.users-file"
     );
 
     public ServerConfig {
@@ -31,6 +33,20 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
         if (shutdownGraceSeconds < 0) {
             throw new IllegalArgumentException("http.shutdown-grace-seconds must not be negative");
         }
+        if (registrationPort < 0 || registrationPort > 65535) {
+            throw new IllegalArgumentException("registration.port must be between 0 and 65535");
+        }
+        if (port != 0 && port == registrationPort) {
+            throw new IllegalArgumentException("HTTP and registration ports must be different");
+        }
+        Objects.requireNonNull(usersFile, "usersFile");
+        if (usersFile.toString().isBlank() || usersFile.getFileName() == null) {
+            throw new IllegalArgumentException("auth.users-file must name a file");
+        }
+    }
+
+    public ServerConfig(String bindAddress, int port, int maxConcurrentRequests, int shutdownGraceSeconds) {
+        this(bindAddress, port, maxConcurrentRequests, shutdownGraceSeconds, 8081, Path.of("data/users.json"));
     }
 
     public static ServerConfig defaults() {
@@ -62,7 +78,9 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
             properties.getProperty("http.bind-address", defaults.bindAddress()),
             integer(properties, "http.port", defaults.port()),
             integer(properties, "http.max-concurrent-requests", defaults.maxConcurrentRequests()),
-            integer(properties, "http.shutdown-grace-seconds", defaults.shutdownGraceSeconds())
+            integer(properties, "http.shutdown-grace-seconds", defaults.shutdownGraceSeconds()),
+            integer(properties, "registration.port", defaults.registrationPort()),
+            Path.of(properties.getProperty("auth.users-file", defaults.usersFile().toString()))
         );
     }
 

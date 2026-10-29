@@ -1,5 +1,6 @@
 package top.kmar.worldrelay.server.http;
 
+import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import top.kmar.worldrelay.server.ServerConfig;
 
@@ -9,19 +10,38 @@ import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.UnaryOperator;
 
 /** 管理监听器及请求执行器；每个实例只允许启动一次。 */
 public final class WorldRelayHttpServer implements AutoCloseable {
 
-    private final ServerConfig config;
+    private final InetSocketAddress bindAddress;
+    private final int maxConcurrentRequests;
+    private final int shutdownGraceSeconds;
     private final HttpRouter router;
+    private final UnaryOperator<HttpHandler> middleware;
     private HttpServer server;
     private ExecutorService executor;
     private boolean closed;
 
     public WorldRelayHttpServer(ServerConfig config, HttpRouter router) {
-        this.config = Objects.requireNonNull(config, "config");
+        this(new InetSocketAddress(config.bindAddress(), config.port()), config.maxConcurrentRequests(),
+            config.shutdownGraceSeconds(), router, UnaryOperator.identity());
+    }
+
+    /** middleware 位于请求 ID / 异常处理之内、路由之前，覆盖所有路径及方法。 */
+    public WorldRelayHttpServer(
+        InetSocketAddress bindAddress, int maxConcurrentRequests, int shutdownGraceSeconds,
+        HttpRouter router, UnaryOperator<HttpHandler> middleware
+    ) {
+        this.bindAddress = Objects.requireNonNull(bindAddress, "bindAddress");
+        if (maxConcurrentRequests < 1 || shutdownGraceSeconds < 0) {
+            throw new IllegalArgumentException("Invalid HTTP concurrency or shutdown grace");
+        }
+        this.maxConcurrentRequests = maxConcurrentRequests;
+        this.shutdownGraceSeconds = shutdownGraceSeconds;
         this.router = Objects.requireNonNull(router, "router");
+        this.middleware = Objects.requireNonNull(middleware, "middleware");
     }
 
     public synchronized void start() throws IOException {
@@ -32,9 +52,9 @@ public final class WorldRelayHttpServer implements AutoCloseable {
         ExecutorService requests = Executors.newVirtualThreadPerTaskExecutor();
         try {
             listener.setExecutor(requests);
-            listener.createContext("/", new RequestDispatcher(router, config.maxConcurrentRequests()));
+            listener.createContext("/", new RequestDispatcher(middleware.apply(router), maxConcurrentRequests));
             router.freeze();
-            listener.bind(new InetSocketAddress(config.bindAddress(), config.port()), 0);
+            listener.bind(bindAddress, 0);
             listener.start();
             server = listener;
             executor = requests;
@@ -69,9 +89,9 @@ public final class WorldRelayHttpServer implements AutoCloseable {
             return;
         }
         long started = System.nanoTime();
-        long budget = TimeUnit.SECONDS.toNanos(config.shutdownGraceSeconds());
+        long budget = TimeUnit.SECONDS.toNanos(shutdownGraceSeconds);
         try {
-            server.stop(config.shutdownGraceSeconds());
+            server.stop(shutdownGraceSeconds);
         } finally {
             executor.shutdown();
             long remaining = Math.max(0, budget - (System.nanoTime() - started));
