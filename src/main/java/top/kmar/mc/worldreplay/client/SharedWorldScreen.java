@@ -16,6 +16,7 @@ import org.jetbrains.annotations.NotNull;
 import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /** 共享世界列表与详情页面；当前使用示例数据，加入和新建按钮尚未接入操作。 */
 public final class SharedWorldScreen extends Screen {
@@ -55,6 +56,7 @@ public final class SharedWorldScreen extends Screen {
 
     @Override
     protected void init() {
+        var client = Objects.requireNonNull(this.minecraft, "Screen must be initialized with a Minecraft client");
         int contentWidth = this.width - MARGIN * 2;
         int contentHeight = Math.max(40, this.height - CONTENT_TOP - 54);
         int listWidth = (contentWidth - COLUMN_GAP) * 3 / 5;
@@ -62,7 +64,7 @@ public final class SharedWorldScreen extends Screen {
         // 详情滚动条绘制在控件右侧，额外预留其占用的宽度。
         int detailsWidth = this.width - MARGIN - detailsX - 8;
         int buttonGap = 6;
-        int buttonWidth = (contentWidth - buttonGap * 2) / 3;
+        int buttonWidth = (contentWidth - buttonGap * 3) / 4;
         int buttonY = this.height - 40;
 
         // 加入和新建按钮暂用空回调；加入按钮的可用状态仍随所选世界变化。
@@ -79,7 +81,11 @@ public final class SharedWorldScreen extends Screen {
             .bounds(MARGIN + buttonWidth + buttonGap, buttonY, buttonWidth, Button.DEFAULT_HEIGHT).build());
         int backX = MARGIN + (buttonWidth + buttonGap) * 2;
         this.addRenderableWidget(Button.builder(CommonComponents.GUI_BACK, button -> this.onClose())
-            .bounds(backX, buttonY, this.width - MARGIN - backX, Button.DEFAULT_HEIGHT).build());
+            .bounds(backX, buttonY, buttonWidth, Button.DEFAULT_HEIGHT).build());
+        int settingsX = MARGIN + (buttonWidth + buttonGap) * 3;
+        this.addRenderableWidget(Button.builder(Component.translatable(TRANSLATION_PREFIX + "settings"),
+                button -> client.setScreen(new SharedWorldSettingsScreen(this)))
+            .bounds(settingsX, buttonY, this.width - MARGIN - settingsX, Button.DEFAULT_HEIGHT).build());
 
         worldList.children().stream().filter(entry -> entry.world.equals(this.selectedWorld)).findFirst()
             .ifPresent(worldList::setSelected);
