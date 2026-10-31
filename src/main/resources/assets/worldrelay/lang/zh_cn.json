@@ -1,4 +1,7 @@
 {
+  "worldrelay.shared_worlds.loading": "正在加载共享世界……",
+  "worldrelay.shared_worlds.load_failed": "无法加载共享世界，请检查服务器设置或网络连接后重新进入。",
+  "worldrelay.shared_worlds.empty": "暂无共享世界",
   "worldrelay.menu.shared_worlds": "共享世界",
   "worldrelay.shared_worlds.list_title": "世界列表",
   "worldrelay.shared_worlds.details_title": "世界详情",

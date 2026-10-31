@@ -1,4 +1,7 @@
 {
+  "worldrelay.shared_worlds.loading": "Loading shared worlds...",
+  "worldrelay.shared_worlds.load_failed": "Could not load shared worlds. Check server settings or your connection and reopen this screen.",
+  "worldrelay.shared_worlds.empty": "No shared worlds available",
   "worldrelay.menu.shared_worlds": "Shared Worlds",
   "worldrelay.shared_worlds.list_title": "Worlds",
   "worldrelay.shared_worlds.details_title": "World details",

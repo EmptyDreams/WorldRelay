@@ -23,7 +23,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
-/** 共享世界列表与详情页面；当前使用示例数据，加入和新建按钮尚未接入操作。 */
+/** 共享世界列表与详情页面；从协调服务加载列表，加入和新建按钮尚未接入操作。 */
 public final class SharedWorldScreen extends Screen {
 
     private static final String TRANSLATION_PREFIX = "worldrelay.shared_worlds.";
@@ -37,60 +37,74 @@ public final class SharedWorldScreen extends Screen {
     private static final int BORDER_COLOR = 0xFF555555;
     private static final Component HTTP_WARNING = Component.translatable("worldrelay.shared_worlds.http_warning");
 
-    // TODO: 临时示例数据仅用于查看布局和状态，后续由世界列表接口替换。
-    private static final Component PREVIEW_NOTICE = Component.literal("示例列表 · 世界服务尚未接入");
-    private static final List<PreviewWorld> PREVIEW_WORLDS = List.of(
-        new PreviewWorld(Component.literal("我们的生存世界"), WorldStatus.RUNNING,
-            "小明", 2, Component.literal("今天 18:40")),
-        new PreviewWorld(Component.literal("建筑练习场"), WorldStatus.FREE,
-            null, 0, Component.literal("昨天 21:16")),
-        new PreviewWorld(Component.literal("机械与铁路"), WorldStatus.RECOVERY_REQUIRED,
-            "小雨", -1, Component.literal("今天 17:22")),
-        new PreviewWorld(Component.literal("朋友的冒险"), WorldStatus.COMMITTING,
-            "阿木", -1, Component.literal("今天 16:05"))
-    );
-
     private final Screen parent;
-    private PreviewWorld selectedWorld = PREVIEW_WORLDS.getFirst();
+    private ListedWorld selectedWorld;
+    private List<ListedWorld> worlds = List.of();
+    private Component listMessage = Component.translatable(TRANSLATION_PREFIX + "loading");
+    private boolean loadFailed;
+    private WorldList worldList;
     private DetailsPanel detailsPanel;
     private Button joinButton;
     private boolean usesHttp;
     private int warningHeight;
-    private int settingsReadGeneration;
-    private boolean settingsRefreshPending;
+    private int listRequestGeneration;
+    private boolean listRefreshPending;
 
     public SharedWorldScreen(Screen parent) {
         super(Component.translatable("worldrelay.menu.shared_worlds"));
         this.parent = parent;
     }
 
-    /** 每次进入列表（包括从设置页返回）时异步刷新传输安全提示。 */
+    /** 每次进入列表（包括从设置页返回）时异步刷新列表和传输安全提示。 */
     @Override
     public void added() {
         super.added();
-        this.settingsRefreshPending = true;
+        this.listRefreshPending = true;
     }
 
-    private void refreshConnectionWarning(@NotNull Minecraft client) {
-        int generation = ++this.settingsReadGeneration;
+    private void refreshWorldList(@NotNull Minecraft client) {
+        int generation = ++this.listRequestGeneration;
         Path file = client.gameDirectory.toPath().resolve("config/worldrelay-client.json");
+        String playerName = client.getUser().getName();
+        this.worlds = List.of();
+        this.selectedWorld = null;
+        this.loadFailed = false;
+        this.listMessage = Component.translatable(TRANSLATION_PREFIX + "loading");
+        this.rebuildWidgets();
         CompletableFuture.supplyAsync(() -> {
             try {
                 var settings = ClientConnectionSettings.load(file);
-                return !settings.serverAddress().isEmpty() && settings.usesHttp();
+                boolean http = !settings.serverAddress().isEmpty() && settings.usesHttp();
+                client.execute(() -> {
+                    if (generation == this.listRequestGeneration && client.screen == this) {
+                        this.usesHttp = http;
+                        this.rebuildWidgets();
+                    }
+                });
+                return SharedWorldListClient.fetch(settings, playerName).stream()
+                    .map(world -> new ListedWorld(world.worldId(), Component.literal(world.name()),
+                        WorldStatus.valueOf(world.status()), world.hostName(),
+                        world.playerCount() == null ? -1 : world.playerCount(),
+                        Component.literal(world.lastCommittedAt()))).toList();
             } catch (IOException e) {
                 throw new CompletionException(e);
             }
-        }, Util.ioPool()).whenComplete((http, error) -> client.execute(() -> {
-            if (generation != this.settingsReadGeneration || client.screen != this) {
+        }, Util.ioPool()).whenComplete((loaded, error) -> client.execute(() -> {
+            if (generation != this.listRequestGeneration || client.screen != this) {
                 return;
             }
-            boolean insecure = error == null && Boolean.TRUE.equals(http);
-            if (this.usesHttp != insecure) {
-                this.usesHttp = insecure;
-                this.rebuildWidgets();
-            }
+            this.loadFailed = error != null;
+            this.worlds = error == null ? loaded : List.of();
+            this.selectedWorld = this.worlds.isEmpty() ? null : this.worlds.getFirst();
+            this.listMessage = Component.translatable(TRANSLATION_PREFIX + (error != null ? "load_failed" : "empty"));
+            this.rebuildWidgets();
         }));
+    }
+
+    @Override
+    public void removed() {
+        ++this.listRequestGeneration;
+        super.removed();
     }
 
     @Override
@@ -113,7 +127,7 @@ public final class SharedWorldScreen extends Screen {
         this.joinButton = Button.builder(Component.translatable(TRANSLATION_PREFIX + "join"), placeholder)
             .bounds(MARGIN, buttonY, buttonWidth, Button.DEFAULT_HEIGHT).build();
         this.detailsPanel = new DetailsPanel(detailsX, contentTop, detailsWidth, contentHeight);
-        WorldList worldList = new WorldList(MARGIN, contentTop, listWidth, contentHeight);
+        this.worldList = new WorldList(MARGIN, contentTop, listWidth, contentHeight);
 
         this.addRenderableWidget(worldList);
         this.addRenderableWidget(this.detailsPanel);
@@ -128,12 +142,13 @@ public final class SharedWorldScreen extends Screen {
         this.addRenderableWidget(Button.builder(CommonComponents.GUI_BACK, button -> this.onClose())
             .bounds(backX, buttonY, this.width - MARGIN - backX, Button.DEFAULT_HEIGHT).build());
 
+        this.joinButton.active = false;
         worldList.children().stream().filter(entry -> entry.world.equals(this.selectedWorld)).findFirst()
             .ifPresent(worldList::setSelected);
         this.setInitialFocus(worldList);
-        if (this.settingsRefreshPending) {
-            this.settingsRefreshPending = false;
-            this.refreshConnectionWarning(client);
+        if (this.listRefreshPending) {
+            this.listRefreshPending = false;
+            this.refreshWorldList(client);
         }
     }
 
@@ -141,8 +156,15 @@ public final class SharedWorldScreen extends Screen {
     public void render(@NotNull GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         super.render(graphics, mouseX, mouseY, partialTick);
         graphics.drawCenteredString(this.font, this.title, this.width / 2, 12, TEXT_COLOR);
-        graphics.drawCenteredString(this.font, PREVIEW_NOTICE,
-            this.width / 2, 28, SECONDARY_TEXT_COLOR);
+        if (this.worlds.isEmpty()) {
+            var lines = this.font.split(this.listMessage, Math.max(1, this.worldList.getWidth() - 16));
+            int y = this.worldList.getY() + (this.worldList.getHeight() - lines.size() * (this.font.lineHeight + 1)) / 2;
+            for (var line : lines) {
+                graphics.drawCenteredString(this.font, line, this.worldList.getX() + this.worldList.getWidth() / 2,
+                    y, this.loadFailed ? 0xFFFF5555 : SECONDARY_TEXT_COLOR);
+                y += this.font.lineHeight + 1;
+            }
+        }
         if (this.usesHttp) {
             int warningY = 44;
             for (var line : this.font.split(HTTP_WARNING, this.width - MARGIN * 2)) {
@@ -166,7 +188,7 @@ public final class SharedWorldScreen extends Screen {
     }
 
     /** 只描述本页展示需要的数据，不代表已经实现协调服务或游戏连接。 */
-    private record PreviewWorld(Component name, WorldStatus status, @Nullable String host, int players, Component lastSync) {
+    private record ListedWorld(String worldId, Component name, WorldStatus status, @Nullable String host, int players, Component lastSync) {
 
         Component hostName() {
             return host == null ? Component.translatable(TRANSLATION_PREFIX + "no_host") : Component.literal(host);
@@ -190,7 +212,8 @@ public final class SharedWorldScreen extends Screen {
         RUNNING("running", true, 0xFF80D080),
         // 同步中允许选择加入，后续操作应进入可取消的等待流程，不能直接接管世界。
         COMMITTING("committing", true, 0xFFFFD080),
-        RECOVERY_REQUIRED("recovery_required", false, 0xFFFFAA00);
+        RECOVERY_REQUIRED("recovery_required", false, 0xFFFFAA00),
+        OWNED_OFFLINE("recovery_required", false, 0xFFFFAA00);
 
         private final String key;
         private final boolean joinAllowed;
@@ -217,7 +240,7 @@ public final class SharedWorldScreen extends Screen {
         WorldList(int x, int y, int width, int height) {
             super(Minecraft.getInstance(), width, height, y, WORLD_ROW_HEIGHT);
             this.setX(x);
-            PREVIEW_WORLDS.forEach(world -> this.addEntry(new WorldEntry(world)));
+            worlds.forEach(world -> this.addEntry(new WorldEntry(world)));
         }
 
         @Override
@@ -242,9 +265,9 @@ public final class SharedWorldScreen extends Screen {
 
         private final class WorldEntry extends ObjectSelectionList.Entry<WorldEntry> {
 
-            private final PreviewWorld world;
+            private final ListedWorld world;
 
-            WorldEntry(PreviewWorld world) {
+            WorldEntry(ListedWorld world) {
                 this.world = world;
             }
 
@@ -298,7 +321,7 @@ public final class SharedWorldScreen extends Screen {
             super(x, y, width, height, Component.translatable(TRANSLATION_PREFIX + "details_title"));
         }
 
-        void show(PreviewWorld world) {
+        void show(ListedWorld world) {
             this.lines.clear();
             int y = addParagraph(world.name(), TEXT_COLOR, PADDING, 2);
             y = addParagraph(world.status().label(), world.status().color, y, 6);
@@ -341,7 +364,11 @@ public final class SharedWorldScreen extends Screen {
         }
 
         @Override
-        protected void updateWidgetNarration(NarrationElementOutput output) {
+        protected void updateWidgetNarration(@NotNull NarrationElementOutput output) {
+            if (selectedWorld == null) {
+                output.add(NarratedElementType.TITLE, listMessage);
+                return;
+            }
             output.add(NarratedElementType.TITLE, selectedWorld.name());
             output.add(NarratedElementType.HINT, selectedWorld.status().description());
         }
