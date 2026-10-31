@@ -9,6 +9,7 @@
   "worldrelay.shared_worlds.create": "新建世界",
   "worldrelay.shared_worlds.settings": "设置",
   "worldrelay.shared_worlds.http_warning": "警告：当前使用 HTTP，玩家名称和 Token 将以明文传输。",
+  "worldrelay.shared_worlds.http_warning_label": "当前连接未加密",
   "worldrelay.shared_worlds.back_hint": "Esc 返回主菜单",
   "worldrelay.shared_worlds.host": "房主：%s",
   "worldrelay.shared_worlds.players": "在线玩家：%s",

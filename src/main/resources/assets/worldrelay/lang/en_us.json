@@ -9,6 +9,7 @@
   "worldrelay.shared_worlds.create": "Create World",
   "worldrelay.shared_worlds.settings": "Settings",
   "worldrelay.shared_worlds.http_warning": "Warning: HTTP is unencrypted. Your player name and Token can be intercepted.",
+  "worldrelay.shared_worlds.http_warning_label": "Connection not encrypted",
   "worldrelay.shared_worlds.back_hint": "Esc to return to the main menu",
   "worldrelay.shared_worlds.host": "Host: %s",
   "worldrelay.shared_worlds.players": "Online: %s",

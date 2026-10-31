@@ -36,6 +36,7 @@ public final class SharedWorldScreen extends Screen {
     private static final int PANEL_COLOR = 0x90000000;
     private static final int BORDER_COLOR = 0xFF555555;
     private static final Component HTTP_WARNING = Component.translatable("worldrelay.shared_worlds.http_warning");
+    private static final Component HTTP_WARNING_LABEL = Component.translatable("worldrelay.shared_worlds.http_warning_label");
 
     private final Screen parent;
     private ListedWorld selectedWorld;
@@ -46,7 +47,6 @@ public final class SharedWorldScreen extends Screen {
     private DetailsPanel detailsPanel;
     private Button joinButton;
     private boolean usesHttp;
-    private int warningHeight;
     private int listRequestGeneration;
     private boolean listRefreshPending;
 
@@ -111,8 +111,7 @@ public final class SharedWorldScreen extends Screen {
     protected void init() {
         var client = Objects.requireNonNull(this.minecraft, "Screen must be initialized with a Minecraft client");
         int contentWidth = this.width - MARGIN * 2;
-        this.warningHeight = this.usesHttp ? this.font.split(HTTP_WARNING, contentWidth).size() * (this.font.lineHeight + 1) + 6 : 0;
-        int contentTop = CONTENT_TOP + this.warningHeight;
+        int contentTop = CONTENT_TOP;
         int contentHeight = Math.max(40, this.height - contentTop - 54);
         int listWidth = (contentWidth - COLUMN_GAP) * 3 / 5;
         int detailsX = MARGIN + listWidth + COLUMN_GAP;
@@ -165,18 +164,55 @@ public final class SharedWorldScreen extends Screen {
                 y += this.font.lineHeight + 1;
             }
         }
-        if (this.usesHttp) {
-            int warningY = 44;
-            for (var line : this.font.split(HTTP_WARNING, this.width - MARGIN * 2)) {
-                graphics.drawString(this.font, line, MARGIN, warningY, 0xFFFFAA00);
-                warningY += this.font.lineHeight + 1;
-            }
-        }
-        graphics.drawString(this.font, Component.translatable(TRANSLATION_PREFIX + "list_title"), MARGIN, 44 + this.warningHeight, TEXT_COLOR);
+        graphics.drawString(this.font, Component.translatable(TRANSLATION_PREFIX + "list_title"), MARGIN, 44, TEXT_COLOR);
         graphics.drawString(this.font, Component.translatable(TRANSLATION_PREFIX + "details_title"),
-            this.detailsPanel.getX(), 44 + this.warningHeight, TEXT_COLOR);
+            this.detailsPanel.getX(), 44, TEXT_COLOR);
         graphics.drawCenteredString(this.font, Component.translatable(TRANSLATION_PREFIX + "back_hint"),
             this.width / 2, this.height - 12, SECONDARY_TEXT_COLOR);
+        if (this.usesHttp) {
+            this.renderHttpWarning(graphics, mouseX, mouseY);
+        }
+    }
+
+    /** 优先与标题同行；窄窗口使用标题下方的既有空隙，不移动列表或详情。 */
+    private void renderHttpWarning(GuiGraphics graphics, int mouseX, int mouseY) {
+        int badgeHeight = 16;
+        int badgeWidth = this.font.width(HTTP_WARNING_LABEL) + 28;
+        int x = this.width - MARGIN - badgeWidth;
+        int titleRight = (this.width + this.font.width(this.title)) / 2;
+        int y = x >= titleRight + 8 ? 8 : 26;
+        int color = 0xFFFFC45C;
+
+        fillRoundedRect(graphics, x, y, badgeWidth, badgeHeight, 4, 0xFFAD792D);
+        fillRoundedRect(graphics, x + 1, y + 1, badgeWidth - 2, badgeHeight - 2, 3, 0xFF302719);
+
+        // 直接绘制三角警告图标，避免依赖字体是否包含警告符号。
+        int iconX = x + 5;
+        int iconY = y + 3;
+        for (int row = 0; row < 10; row++) {
+            int halfWidth = row / 2;
+            graphics.fill(iconX + 5 - halfWidth, iconY + row, iconX + 6 + halfWidth, iconY + row + 1, color);
+        }
+        graphics.fill(iconX + 5, iconY + 3, iconX + 6, iconY + 6, 0xFF302719);
+        graphics.fill(iconX + 5, iconY + 7, iconX + 6, iconY + 8, 0xFF302719);
+        graphics.drawString(this.font, HTTP_WARNING_LABEL, x + 21,
+            y + (badgeHeight - this.font.lineHeight) / 2, color, false);
+
+        if (mouseX >= x && mouseX < x + badgeWidth && mouseY >= y && mouseY < y + badgeHeight) {
+            graphics.renderTooltip(this.font, this.font.split(HTTP_WARNING, Math.max(1, this.width - MARGIN * 2)), mouseX, mouseY);
+        }
+    }
+
+    private static void fillRoundedRect(GuiGraphics graphics, int x, int y, int width, int height, int radius, int color) {
+        for (int row = 0; row < height; row++) {
+            int edgeDistance = Math.min(row, height - row - 1);
+            int inset = 0;
+            if (edgeDistance < radius) {
+                double dy = radius - edgeDistance - 0.5;
+                inset = (int) Math.ceil(radius - Math.sqrt(radius * radius - dy * dy) - 0.5);
+            }
+            graphics.fill(x + inset, y + row, x + width - inset, y + row + 1, color);
+        }
     }
 
     /** 点击返回按钮或按 Esc，返回打开此页面的主菜单。 */
