@@ -8,9 +8,13 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.ObjectSelectionList;
 import net.minecraft.client.gui.narration.NarratedElementType;
 import net.minecraft.client.gui.narration.NarrationElementOutput;
+import net.minecraft.client.gui.navigation.CommonInputs;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.sounds.SoundEvents;
 import net.minecraft.util.FormattedCharSequence;
 import org.jetbrains.annotations.NotNull;
 
@@ -23,7 +27,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
-/** 共享世界列表与详情页面；从协调服务加载列表，加入按钮尚未接入操作。 */
+/** 左侧世界列表与操作、右侧世界详情；行内加入入口尚未接入实际托管或连接流程。 */
 public final class SharedWorldScreen extends Screen {
 
     private static final String TRANSLATION_PREFIX = "worldrelay.shared_worlds.";
@@ -31,12 +35,18 @@ public final class SharedWorldScreen extends Screen {
     private static final int COLUMN_GAP = 12;
     private static final int CONTENT_TOP = 58;
     private static final int WORLD_ROW_HEIGHT = 32;
+    private static final int JOIN_ICON_SIZE = 24;
+    private static final int JOIN_ICON_OFFSET_X = 4;
+    private static final int JOIN_ICON_OFFSET_Y = 2;
     private static final int TEXT_COLOR = 0xFFFFFFFF;
     private static final int SECONDARY_TEXT_COLOR = 0xFFAAAAAA;
     private static final int PANEL_COLOR = 0x90000000;
     private static final int BORDER_COLOR = 0xFF555555;
     private static final Component HTTP_WARNING = Component.translatable("worldrelay.shared_worlds.http_warning");
     private static final Component HTTP_WARNING_LABEL = Component.translatable("worldrelay.shared_worlds.http_warning_label");
+    private static final Component JOIN_LABEL = Component.translatable(TRANSLATION_PREFIX + "join");
+    private static final ResourceLocation JOIN_SPRITE = ResourceLocation.withDefaultNamespace("world_list/join");
+    private static final ResourceLocation JOIN_HIGHLIGHTED_SPRITE = ResourceLocation.withDefaultNamespace("world_list/join_highlighted");
 
     private final Screen parent;
     private ListedWorld selectedWorld;
@@ -45,7 +55,6 @@ public final class SharedWorldScreen extends Screen {
     private boolean loadFailed;
     private WorldList worldList;
     private DetailsPanel detailsPanel;
-    private Button joinButton;
     private boolean usesHttp;
     private int listRequestGeneration;
     private boolean listRefreshPending;
@@ -115,32 +124,29 @@ public final class SharedWorldScreen extends Screen {
         int contentWidth = this.width - MARGIN * 2;
         int contentTop = CONTENT_TOP;
         int contentHeight = Math.max(40, this.height - contentTop - 54);
+        int buttonY = this.height - 40;
+        int detailsHeight = Math.max(40, buttonY + Button.DEFAULT_HEIGHT - contentTop);
         int listWidth = (contentWidth - COLUMN_GAP) * 3 / 5;
         int detailsX = MARGIN + listWidth + COLUMN_GAP;
         // 详情滚动条绘制在控件右侧，额外预留其占用的宽度。
         int detailsWidth = this.width - MARGIN - detailsX - 8;
         int buttonGap = 6;
-        int buttonWidth = (contentWidth - buttonGap * 2) / 3;
-        int buttonY = this.height - 40;
+        int buttonWidth = (listWidth - buttonGap) / 2;
 
-        // 加入按钮暂用空回调，可用状态仍随所选世界变化。
-        this.joinButton = Button.builder(Component.translatable(TRANSLATION_PREFIX + "join"), button -> {})
-            .bounds(MARGIN, buttonY, buttonWidth, Button.DEFAULT_HEIGHT).build();
-        this.detailsPanel = new DetailsPanel(detailsX, contentTop, detailsWidth, contentHeight);
+        this.detailsPanel = new DetailsPanel(detailsX, contentTop, detailsWidth, detailsHeight);
         this.worldList = new WorldList(MARGIN, contentTop, listWidth, contentHeight);
 
         this.addRenderableWidget(worldList);
         this.addRenderableWidget(this.detailsPanel);
-        this.addRenderableWidget(this.joinButton);
-        int settingsX = MARGIN + buttonWidth + buttonGap;
+        // 两个按钮及中间间距的总宽度与左侧列表一致，右侧留给详情。
+        int settingsX = MARGIN;
         this.addRenderableWidget(Button.builder(Component.translatable(TRANSLATION_PREFIX + "settings"),
                 button -> client.setScreen(new SharedWorldSettingsScreen(this)))
             .bounds(settingsX, buttonY, buttonWidth, Button.DEFAULT_HEIGHT).build());
-        int backX = MARGIN + (buttonWidth + buttonGap) * 2;
+        int backX = settingsX + buttonWidth + buttonGap;
         this.addRenderableWidget(Button.builder(CommonComponents.GUI_BACK, button -> this.onClose())
-            .bounds(backX, buttonY, this.width - MARGIN - backX, Button.DEFAULT_HEIGHT).build());
+            .bounds(backX, buttonY, listWidth - buttonWidth - buttonGap, Button.DEFAULT_HEIGHT).build());
 
-        this.joinButton.active = false;
         worldList.children().stream().filter(entry -> entry.world.equals(this.selectedWorld)).findFirst()
             .ifPresent(worldList::setSelected);
         this.setInitialFocus(worldList);
@@ -166,8 +172,6 @@ public final class SharedWorldScreen extends Screen {
         graphics.drawString(this.font, Component.translatable(TRANSLATION_PREFIX + "list_title"), MARGIN, 44, TEXT_COLOR);
         graphics.drawString(this.font, Component.translatable(TRANSLATION_PREFIX + "details_title"),
             this.detailsPanel.getX(), 44, TEXT_COLOR);
-        graphics.drawCenteredString(this.font, Component.translatable(TRANSLATION_PREFIX + "back_hint"),
-            this.width / 2, this.height - 12, SECONDARY_TEXT_COLOR);
         if (this.usesHttp) {
             this.renderHttpWarning(graphics, mouseX, mouseY);
         }
@@ -269,7 +273,7 @@ public final class SharedWorldScreen extends Screen {
         }
     }
 
-    /** 复用原版列表的选择、键盘导航和滚动行为。 */
+    /** 复用原版列表的选择、键盘导航和滚动行为，加入入口位于每行名称左侧。 */
     private final class WorldList extends ObjectSelectionList<WorldList.WorldEntry> {
 
         WorldList(int x, int y, int width, int height) {
@@ -291,16 +295,26 @@ public final class SharedWorldScreen extends Screen {
         @Override
         public void setSelected(@Nullable WorldEntry entry) {
             super.setSelected(entry);
-            joinButton.active = entry != null && entry.world.status().joinAllowed;
             if (entry != null) {
                 selectedWorld = entry.world;
                 detailsPanel.show(selectedWorld);
             }
         }
 
+        @Override
+        public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+            WorldEntry entry = this.getSelected();
+            if (entry != null && CommonInputs.selected(keyCode)) {
+                entry.activateJoin();
+                return true;
+            }
+            return super.keyPressed(keyCode, scanCode, modifiers);
+        }
+
         private final class WorldEntry extends ObjectSelectionList.Entry<WorldEntry> {
 
             private final ListedWorld world;
+            private long lastClickTime;
 
             WorldEntry(ListedWorld world) {
                 this.world = world;
@@ -311,13 +325,16 @@ public final class SharedWorldScreen extends Screen {
                 GuiGraphics graphics, int index, int top, int left, int width, int height,
                 int mouseX, int mouseY, boolean hovering, float partialTick
             ) {
-                int iconSize = 24;
-                int iconX = left + 4;
-                int iconY = top + 2;
-                graphics.fill(iconX, iconY, iconX + iconSize, iconY + iconSize, 0xFF343B30);
-                graphics.renderOutline(iconX, iconY, iconSize, iconSize, BORDER_COLOR);
-                graphics.drawCenteredString(font, world.name().getString().substring(0, 1),
-                    iconX + iconSize / 2, iconY + (iconSize - font.lineHeight) / 2, TEXT_COLOR);
+                int iconX = left + JOIN_ICON_OFFSET_X;
+                int iconY = top + JOIN_ICON_OFFSET_Y;
+                boolean overJoin = hovering && this.isOverJoinIcon(mouseX, mouseY);
+                graphics.fill(iconX, iconY, iconX + JOIN_ICON_SIZE, iconY + JOIN_ICON_SIZE, 0xFF343B30);
+                graphics.renderOutline(iconX, iconY, JOIN_ICON_SIZE, JOIN_ICON_SIZE, BORDER_COLOR);
+                graphics.blitSprite(overJoin && world.status().joinAllowed ? JOIN_HIGHLIGHTED_SPRITE : JOIN_SPRITE,
+                    iconX, iconY, JOIN_ICON_SIZE, JOIN_ICON_SIZE);
+                if (!world.status().joinAllowed) {
+                    graphics.fill(iconX, iconY, iconX + JOIN_ICON_SIZE, iconY + JOIN_ICON_SIZE, 0x90000000);
+                }
                 int textX = left + 34;
                 int textWidth = width - 38;
                 // 列表只保留名称和状态各一行，完整信息在右侧详情中查看。
@@ -332,12 +349,37 @@ public final class SharedWorldScreen extends Screen {
                     return false;
                 }
                 WorldList.this.setSelected(this);
+                long now = Util.getMillis();
+                if (this.isOverJoinIcon(mouseX, mouseY) || now - lastClickTime < 250L) {
+                    this.activateJoin();
+                }
+                this.lastClickTime = now;
                 return true;
+            }
+
+            /** 使用当前滚动位置计算点击区域，避免滚动后点击到上一帧的图标坐标。 */
+            private boolean isOverJoinIcon(double mouseX, double mouseY) {
+                int index = WorldList.this.children().indexOf(this);
+                int x = WorldList.this.getRowLeft() + JOIN_ICON_OFFSET_X;
+                int y = WorldList.this.getRowTop(index) + JOIN_ICON_OFFSET_Y;
+                return mouseX >= x && mouseX < x + JOIN_ICON_SIZE && mouseY >= y && mouseY < y + JOIN_ICON_SIZE;
+            }
+
+            private void activateJoin() {
+                if (!world.status().joinAllowed) {
+                    return;
+                }
+                WorldList.this.setSelected(this);
+                Minecraft.getInstance().getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.0F));
+                // 当前仅处理选择和点击反馈，实际托管和连接流程尚未接入。
             }
 
             @Override
             public @NotNull Component getNarration() {
-                return world.name().copy().append(CommonComponents.NARRATION_SEPARATOR).append(world.listStatus());
+                Component narration = world.name().copy().append(CommonComponents.NARRATION_SEPARATOR).append(world.listStatus());
+                return world.status().joinAllowed
+                    ? narration.copy().append(CommonComponents.NARRATION_SEPARATOR).append(JOIN_LABEL)
+                    : narration;
             }
 
         }
