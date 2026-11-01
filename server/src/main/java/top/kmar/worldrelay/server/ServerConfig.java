@@ -11,11 +11,13 @@ import java.util.Set;
 
 /** HTTP 服务配置；类初始化期间不读取文件或部署环境配置。 */
 public record ServerConfig(String bindAddress, int port, int maxConcurrentRequests, int shutdownGraceSeconds,
-                           int registrationPort, Path usersFile, Path worldsDirectory) {
+                           int registrationPort, Path usersFile, Path worldsDirectory,
+                           int heartbeatIntervalSeconds, int heartbeatTimeoutSeconds) {
 
     private static final Set<String> KEYS = Set.of(
         "http.bind-address", "http.port", "http.max-concurrent-requests", "http.shutdown-grace-seconds",
-        "registration.port", "auth.users-file", "worlds.directory"
+        "registration.port", "auth.users-file", "worlds.directory",
+        "ownership.heartbeat-interval-seconds", "ownership.heartbeat-timeout-seconds"
     );
 
     public ServerConfig {
@@ -47,6 +49,17 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
         if (worldsDirectory.toString().isBlank()) {
             throw new IllegalArgumentException("worlds.directory must name a directory");
         }
+        if (heartbeatIntervalSeconds < 1 || heartbeatTimeoutSeconds <= heartbeatIntervalSeconds) {
+            throw new IllegalArgumentException("Heartbeat timeout must be greater than the positive interval");
+        }
+    }
+
+    public ServerConfig(
+        String bindAddress, int port, int maxConcurrentRequests, int shutdownGraceSeconds,
+        int registrationPort, Path usersFile, Path worldsDirectory
+    ) {
+        this(bindAddress, port, maxConcurrentRequests, shutdownGraceSeconds, registrationPort, usersFile,
+            worldsDirectory, 10, 30);
     }
 
     public ServerConfig(
@@ -93,7 +106,9 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
             integer(properties, "http.shutdown-grace-seconds", defaults.shutdownGraceSeconds()),
             integer(properties, "registration.port", defaults.registrationPort()),
             Path.of(properties.getProperty("auth.users-file", defaults.usersFile().toString())),
-            Path.of(properties.getProperty("worlds.directory", defaults.worldsDirectory().toString()))
+            Path.of(properties.getProperty("worlds.directory", defaults.worldsDirectory().toString())),
+            integer(properties, "ownership.heartbeat-interval-seconds", defaults.heartbeatIntervalSeconds()),
+            integer(properties, "ownership.heartbeat-timeout-seconds", defaults.heartbeatTimeoutSeconds())
         );
     }
 

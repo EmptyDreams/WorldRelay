@@ -248,8 +248,11 @@ public final class SharedWorldScreen extends Screen {
     /** 只控制页面展示和按钮可用性，不能据此获取或释放世界所有权。 */
     private enum WorldStatus {
         FREE("free", true, 0xFF80D080),
+        PREPARING("preparing", false, 0xFFFFD080),
+        STARTING("starting", false, 0xFFFFD080),
         RUNNING("running", true, 0xFF80D080),
-        // 同步中允许选择加入，后续操作应进入可取消的等待流程，不能直接接管世界。
+        STOPPING("stopping", false, 0xFFFFD080),
+        // 等待提交时选择加入只能进入等待流程，不能接管世界。
         COMMITTING("committing", true, 0xFFFFD080),
         RECOVERY_REQUIRED("recovery_required", false, 0xFFFFAA00),
         OWNED_OFFLINE("recovery_required", false, 0xFFFFAA00);

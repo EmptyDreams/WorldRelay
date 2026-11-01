@@ -53,7 +53,7 @@ class WorldCreationTest {
                 assertTrue(created.headers().firstValue("X-Request-Id").isPresent());
                 first = stringField(created.body(), "worldId");
                 assertEquals("{\"worldId\":\"" + first + "\",\"name\":\"共同世界🌍\",\"status\":\"FREE\","
-                    + "\"hostName\":null,\"playerCount\":0,\"lastCommittedAt\":null}", created.body());
+                    + "\"hostName\":null,\"playerCount\":0,\"lastCommittedAt\":null,\"endpoint\":null}", created.body());
                 assertTrue(Files.isRegularFile(config().worldsDirectory().resolve(first).resolve("world.json")));
                 HttpResponse<String> duplicateName = client.send(create(service, "{\"name\":\"共同世界🌍\"}"),
                     HttpResponse.BodyHandlers.ofString());

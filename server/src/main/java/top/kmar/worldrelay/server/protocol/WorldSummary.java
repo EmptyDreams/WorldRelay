@@ -9,7 +9,8 @@ public record WorldSummary(
     String status,
     String hostName,
     Integer playerCount,
-    String lastCommittedAt
+    String lastCommittedAt,
+    HostEndpoint endpoint
 ) {
 
     /** 在已有 Writer 中写入一个完整摘要对象，由外层负责结束整个 JSON 文档。 */
@@ -35,6 +36,12 @@ public record WorldSummary(
             writer.nullValue();
         } else {
             writer.value(lastCommittedAt);
+        }
+        writer.name("endpoint");
+        if (endpoint == null) {
+            writer.nullValue();
+        } else {
+            endpoint.writeJson(writer);
         }
         writer.endObject();
     }

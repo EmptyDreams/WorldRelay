@@ -28,7 +28,7 @@ public final class WorldRelayService implements AutoCloseable {
         }
         try {
             users = UserStore.open(config.usersFile());
-            worlds = WorldStore.open(config.worldsDirectory());
+            worlds = WorldStore.open(config.worldsDirectory(), config.heartbeatIntervalSeconds(), config.heartbeatTimeoutSeconds());
             HttpRouter registrationRouter = new HttpRouter();
             registrationRouter.register("POST", "/api/v1/register", new RegistrationHandler(users));
             registrationRouter.register("POST", "/api/v1/worlds", new WorldCreateHandler(worlds));

@@ -3,6 +3,7 @@ package top.kmar.worldrelay.server;
 import top.kmar.worldrelay.server.http.HttpResponses;
 import top.kmar.worldrelay.server.http.HttpRouter;
 import top.kmar.worldrelay.server.http.WorldListHandler;
+import top.kmar.worldrelay.server.http.WorldOwnershipHandler;
 import top.kmar.worldrelay.server.world.WorldStore;
 
 import java.util.concurrent.CountDownLatch;
@@ -58,6 +59,10 @@ public final class WorldRelayServer {
             HttpResponses.noContent(exchange, 204);
         });
         router.register("GET", "/api/v1/worlds", new WorldListHandler(worlds));
+        for (WorldOwnershipHandler.Action action : WorldOwnershipHandler.Action.values()) {
+            router.register("POST", "/api/v1/worlds/" + action.name().toLowerCase(java.util.Locale.ROOT),
+                new WorldOwnershipHandler(worlds, action));
+        }
         return router;
     }
 

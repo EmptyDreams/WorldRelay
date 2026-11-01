@@ -14,7 +14,8 @@ import java.util.*;
 /** 世界摘要查询；仅在 IO 线程调用，不获取所有权或打开本地存档。 */
 final class SharedWorldListClient {
 
-    private static final Set<String> STATUSES = Set.of("FREE", "RUNNING", "COMMITTING", "RECOVERY_REQUIRED", "OWNED_OFFLINE");
+    private static final Set<String> STATUSES = Set.of("FREE", "PREPARING", "STARTING", "RUNNING", "STOPPING",
+        "COMMITTING", "RECOVERY_REQUIRED", "OWNED_OFFLINE");
 
     private SharedWorldListClient() {
     }

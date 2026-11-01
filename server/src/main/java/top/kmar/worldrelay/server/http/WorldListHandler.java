@@ -10,7 +10,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
-/** 返回已持久化的世界记录；登记记录不代表已实现托管或所有权。 */
+/** 返回实时协调摘要；端点只在本任期确认就绪且在线时可见。 */
 public final class WorldListHandler implements HttpHandler {
 
     private final WorldStore worlds;
