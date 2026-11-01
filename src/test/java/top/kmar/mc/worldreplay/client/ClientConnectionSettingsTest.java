@@ -6,6 +6,7 @@ import top.kmar.mc.worldreplay.sync.RsyncMode;
 import top.kmar.mc.worldreplay.sync.RsyncTools;
 
 import java.io.IOException;
+import java.net.URI;
 import java.net.http.HttpClient;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -94,7 +95,7 @@ class ClientConnectionSettingsTest {
     void rejectsUnknownModeWithoutLeakingCredentials() throws IOException {
         Path file = Files.writeString(temporary.resolve("invalid.json"), """
             {"serverAddress":"https://relay.example","serverPort":443,"token":"test-token",
-             "rsyncMode":"UNKNOWN","rsyncPath":"","sshPath":""}
+             "rsyncMode":"UNKNOWN","rsyncPath":"","sshPath":"","rsyncAddress":"files.example","rsyncPort":22}
             """);
 
         var error = assertThrows(IOException.class, () -> ClientConnectionSettings.load(file));
@@ -103,8 +104,64 @@ class ClientConnectionSettingsTest {
         assertNull(error.getCause());
     }
 
+    /** 验证接口和 rsync 使用不同主机、端口时分别保存和还原，接口 URI 不受 SSH 端点影响。 */
+    @Test
+    void savesApiAndRsyncEndpointsIndependently() throws IOException {
+        var settings = ClientConnectionSettings.fromInput("https://api.example", "8443", "test-token",
+            RsyncMode.AUTO, "", "", "FILES.example", "2222");
+        Path file = temporary.resolve("independent.json");
+
+        settings.save(file);
+        var loaded = ClientConnectionSettings.load(file);
+
+        assertEquals(settings, loaded);
+        assertEquals(URI.create("https://api.example:8443"), loaded.serverUri());
+        assertEquals("files.example", loaded.rsyncEndpoint().getHostString());
+        assertEquals(2222, loaded.rsyncEndpoint().getPort());
+        assertTrue(loaded.rsyncEndpoint().isUnresolved());
+    }
+
+    /** 验证远程地址支持 IPv6，可接受完整方括号输入，并且地址解析不会触发 DNS 查询。 */
+    @Test
+    void acceptsIpv6RsyncAddressWithoutResolvingIt() {
+        for (String address : new String[]{"2001:db8::1", "[2001:db8::1]"}) {
+            var settings = remoteSettings(address, "22");
+            assertEquals("2001:db8::1", settings.rsyncAddress());
+            assertEquals(22, settings.rsyncEndpoint().getPort());
+            assertTrue(settings.rsyncEndpoint().isUnresolved());
+        }
+    }
+
+    /** 验证远程地址必填，且拒绝 URL、用户名、内嵌端口、路径和命令参数，避免混淆 SSH 连接目标。 */
+    @Test
+    void rejectsMalformedRsyncAddresses() {
+        var missing = assertThrows(ClientConnectionSettings.ValidationException.class, () -> remoteSettings("", "22"));
+        assertEquals("worldrelay.settings.error.rsync_address_required", missing.translationKey());
+        for (String address : new String[]{"https://files.example", "user@files.example", "files.example:2222",
+            "files.example/path", "files.example?arg=value", "-oProxyCommand=command", "host name", "[::1]:2222"}) {
+            var error = assertThrows(ClientConnectionSettings.ValidationException.class, () -> remoteSettings(address, "22"));
+            assertEquals("worldrelay.settings.error.rsync_address_invalid", error.translationKey());
+        }
+    }
+
+    /** 验证 SSH 端口独立校验，拒绝缺失、越界和非数字输入，不误报为接口端口错误。 */
+    @Test
+    void rejectsInvalidRsyncPorts() {
+        for (String port : new String[]{"", "0", "65536", "-1", "22x", "2222222222"}) {
+            var error = assertThrows(ClientConnectionSettings.ValidationException.class,
+                () -> remoteSettings("files.example", port));
+            assertEquals("worldrelay.settings.error.rsync_port_invalid", error.translationKey());
+        }
+    }
+
+    private static ClientConnectionSettings remoteSettings(String address, String port) {
+        return ClientConnectionSettings.fromInput("https://api.example", "443", "test-token",
+            RsyncMode.AUTO, "", "", address, port);
+    }
+
     private static ClientConnectionSettings settings(RsyncMode mode, String rsyncPath, String sshPath) {
-        return ClientConnectionSettings.fromInput("https://relay.example.invalid", "443", "test-token", mode, rsyncPath, sshPath);
+        return ClientConnectionSettings.fromInput("https://relay.example.invalid", "443", "test-token", mode, rsyncPath, sshPath,
+            "files.example.invalid", "2222");
     }
 
 }
