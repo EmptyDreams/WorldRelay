@@ -5,6 +5,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
@@ -14,11 +15,12 @@ import net.minecraft.util.FormattedCharSequence;
 import org.jetbrains.annotations.NotNull;
 import org.lwjgl.glfw.GLFW;
 import top.kmar.mc.worldreplay.WorldRelay;
+import top.kmar.mc.worldreplay.sync.RsyncMode;
 
 import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Path;
-import java.util.Objects;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
@@ -32,6 +34,7 @@ public final class SharedWorldSettingsScreen extends Screen {
     private static final int GAP = 6;
     private static final int PROTOCOL_WIDTH = 70;
     private static final int PORT_WIDTH = 64;
+    private static final int ROW_HEIGHT = 36;
 
     private final Screen parent;
     // 草稿独立于控件保存，窗口缩放或重建控件时不丢失尚未保存的输入。
@@ -39,6 +42,12 @@ public final class SharedWorldSettingsScreen extends Screen {
     private String domainDraft = "";
     private String portDraft = "443";
     private String tokenDraft = "";
+    private RsyncMode rsyncModeDraft = RsyncMode.defaultMode();
+    private String rsyncPathDraft = "";
+    private String sshPathDraft = "";
+    private boolean toolsTab;
+    private final List<RsyncMode> availableModes = RsyncMode.availableModes();
+    private final Map<RsyncMode, Button> modeButtons = new EnumMap<>(RsyncMode.class);
     private boolean loadStarted;
     private boolean loading = true;
     private boolean saving;
@@ -56,6 +65,11 @@ public final class SharedWorldSettingsScreen extends Screen {
     private EditBox domainField;
     private EditBox portField;
     private EditBox tokenField;
+    private EditBox playerNameField;
+    private EditBox rsyncPathField;
+    private EditBox sshPathField;
+    private Button connectionTabButton;
+    private Button toolsTabButton;
     private Button visibilityButton;
     private Button saveButton;
     private Button cancelButton;
@@ -71,13 +85,19 @@ public final class SharedWorldSettingsScreen extends Screen {
         var client = Objects.requireNonNull(this.minecraft, "Screen must be initialized with a Minecraft client");
         this.formWidth = Math.min(360, this.width - 32);
         this.formX = (this.width - this.formWidth) / 2;
-        this.formY = Math.max(46, (this.height - 210) / 2);
+        this.formY = Math.max(70, (this.height - 180) / 2);
         this.settingsFile = client.gameDirectory.toPath().resolve("config/worldrelay-client.json");
         int domainWidth = this.formWidth - PROTOCOL_WIDTH - GAP * 2 - PORT_WIDTH;
         int portX = this.formX + this.formWidth - PORT_WIDTH;
+        int tabWidth = (this.formWidth - GAP) / 2;
+        this.connectionTabButton = this.addRenderableWidget(Button.builder(label("connection_tab"),
+            button -> this.selectTab(false)).bounds(this.formX, 42, tabWidth, 20).build());
+        this.toolsTabButton = this.addRenderableWidget(Button.builder(label("tools_tab"),
+            button -> this.selectTab(true)).bounds(this.formX + tabWidth + GAP, 42,
+            this.formWidth - tabWidth - GAP, 20).build());
 
         this.protocolButton = this.addRenderableWidget(Button.builder(this.protocolCaption(),
-            button -> this.setProtocolMenuOpen(!this.protocolMenuOpen))
+                button -> this.setProtocolMenuOpen(!this.protocolMenuOpen))
             .bounds(this.formX, this.formY + 12, PROTOCOL_WIDTH, 20).build());
         this.domainField = new EditBox(this.font, this.formX + PROTOCOL_WIDTH + GAP, this.formY + 12,
             domainWidth, 20, label("domain"));
@@ -101,16 +121,17 @@ public final class SharedWorldSettingsScreen extends Screen {
         });
         this.addRenderableWidget(this.portField);
 
-        EditBox playerName = new EditBox(this.font, this.formX, this.formY + 56, this.formWidth, 20, label("player_name"));
-        playerName.setMaxLength(64);
-        playerName.setValue(client.getUser().getName());
-        playerName.setEditable(false);
-        playerName.setTextColorUneditable(SECONDARY_COLOR);
-        playerName.active = false;
+        this.playerNameField = new EditBox(this.font, this.formX, this.formY + ROW_HEIGHT + 12,
+            this.formWidth, 20, label("player_name"));
+        this.playerNameField.setMaxLength(64);
+        this.playerNameField.setValue(client.getUser().getName());
+        this.playerNameField.setEditable(false);
+        this.playerNameField.setTextColorUneditable(SECONDARY_COLOR);
+        this.playerNameField.active = false;
         // 仅绘制玩家名，不加入交互控件列表，禁止点击和键盘聚焦。
-        this.addRenderableOnly(playerName);
+        this.addRenderableOnly(this.playerNameField);
 
-        this.tokenField = new EditBox(this.font, this.formX, this.formY + 100,
+        this.tokenField = new EditBox(this.font, this.formX, this.formY + ROW_HEIGHT * 2 + 12,
             this.formWidth - 56, 20, label("token")) {
             @Override
             protected @NotNull MutableComponent createNarrationMessage() {
@@ -138,7 +159,43 @@ public final class SharedWorldSettingsScreen extends Screen {
         this.visibilityButton = this.addRenderableWidget(Button.builder(label(this.showToken ? "hide" : "show"), button -> {
             this.showToken = !this.showToken;
             button.setMessage(label(this.showToken ? "hide" : "show"));
-        }).bounds(this.formX + this.formWidth - 50, this.formY + 100, 50, 20).build());
+        }).bounds(this.formX + this.formWidth - 50, this.formY + ROW_HEIGHT * 2 + 12, 50, 20).build());
+
+        this.modeButtons.clear();
+        int modeWidth = (this.formWidth - GAP * (this.availableModes.size() - 1)) / this.availableModes.size();
+        for (int index = 0; index < this.availableModes.size(); index++) {
+            RsyncMode mode = this.availableModes.get(index);
+            Button button = this.addRenderableWidget(Button.builder(modeLabel(mode), clicked -> {
+                this.rsyncModeDraft = mode;
+                this.inputChanged();
+            }).bounds(this.formX + index * (modeWidth + GAP), this.formY + 12, modeWidth, 20).build());
+            button.setTooltip(Tooltip.create(label("rsync_mode." + mode.name().toLowerCase(Locale.ROOT) + "_tooltip")));
+            this.modeButtons.put(mode, button);
+        }
+
+        this.rsyncPathField = new EditBox(this.font, this.formX, this.formY + ROW_HEIGHT + 12,
+            this.formWidth, 20, label("rsync_path"));
+        this.rsyncPathField.setMaxLength(ClientConnectionSettings.MAX_RSYNC_PATH_LENGTH);
+        this.rsyncPathField.setHint(label("executable_path_hint"));
+        this.rsyncPathField.setTooltip(Tooltip.create(label("rsync_path_tooltip")));
+        this.rsyncPathField.setValue(this.rsyncPathDraft);
+        this.rsyncPathField.setResponder(value -> {
+            this.rsyncPathDraft = value;
+            this.inputChanged();
+        });
+        this.addRenderableWidget(this.rsyncPathField);
+
+        this.sshPathField = new EditBox(this.font, this.formX, this.formY + ROW_HEIGHT * 2 + 12,
+            this.formWidth, 20, label("ssh_path"));
+        this.sshPathField.setMaxLength(ClientConnectionSettings.MAX_RSYNC_PATH_LENGTH);
+        this.sshPathField.setHint(label("executable_path_hint"));
+        this.sshPathField.setTooltip(Tooltip.create(label("ssh_path_tooltip")));
+        this.sshPathField.setValue(this.sshPathDraft);
+        this.sshPathField.setResponder(value -> {
+            this.sshPathDraft = value;
+            this.inputChanged();
+        });
+        this.addRenderableWidget(this.sshPathField);
 
         int buttonWidth = (this.formWidth - GAP) / 2;
         this.saveButton = this.addRenderableWidget(Button.builder(label("save"), button -> this.saveSettings(client))
@@ -159,6 +216,17 @@ public final class SharedWorldSettingsScreen extends Screen {
 
     private static Component label(String key) {
         return Component.translatable(PREFIX + key);
+    }
+
+    private static Component modeLabel(RsyncMode mode) {
+        return label("rsync_mode." + mode.name().toLowerCase(Locale.ROOT));
+    }
+
+    private void selectTab(boolean tools) {
+        this.toolsTab = tools;
+        this.setProtocolMenuOpen(false);
+        this.clearFocus();
+        this.updateControls();
     }
 
     private Component protocolCaption() {
@@ -189,7 +257,8 @@ public final class SharedWorldSettingsScreen extends Screen {
     private ClientConnectionSettings draftSettings() {
         String domain = this.domainDraft.strip();
         String address = domain.isEmpty() ? "" : this.protocolDraft + "://" + domain;
-        return ClientConnectionSettings.fromInput(address, this.portDraft, this.tokenDraft);
+        return ClientConnectionSettings.fromInput(address, this.portDraft, this.tokenDraft,
+            this.rsyncModeDraft, this.rsyncPathDraft, this.sshPathDraft);
     }
 
     private void inputChanged() {
@@ -199,16 +268,39 @@ public final class SharedWorldSettingsScreen extends Screen {
 
     private void updateControls() {
         boolean busy = this.loading || this.saving;
-        this.protocolButton.active = !busy;
+        boolean connection = !this.toolsTab;
+        boolean custom = this.toolsTab && this.rsyncModeDraft == RsyncMode.CUSTOM;
+        this.connectionTabButton.active = !busy && this.toolsTab;
+        this.toolsTabButton.active = !busy && !this.toolsTab;
+        this.protocolButton.visible = connection;
+        this.domainField.visible = connection;
+        this.portField.visible = connection;
+        this.playerNameField.visible = connection;
+        this.tokenField.visible = connection;
+        this.visibilityButton.visible = connection;
+        this.protocolButton.active = !busy && connection;
         this.httpsOption.active = !busy;
         this.httpOption.active = !busy;
-        if (busy) {
+        if (busy || this.toolsTab) {
             this.setProtocolMenuOpen(false);
         }
-        this.domainField.setEditable(!busy);
-        this.portField.setEditable(!busy);
-        this.tokenField.setEditable(!busy);
-        this.visibilityButton.active = !busy;
+        this.domainField.setEditable(!busy && connection);
+        this.portField.setEditable(!busy && connection);
+        this.tokenField.setEditable(!busy && connection);
+        this.rsyncPathField.visible = custom;
+        this.sshPathField.visible = custom;
+        this.rsyncPathField.setEditable(!busy && custom);
+        this.sshPathField.setEditable(!busy && custom);
+        this.rsyncPathField.active = !busy && custom;
+        this.sshPathField.active = !busy && custom;
+        this.domainField.active = !busy && connection;
+        this.portField.active = !busy && connection;
+        this.tokenField.active = !busy && connection;
+        for (var entry : this.modeButtons.entrySet()) {
+            entry.getValue().visible = this.toolsTab;
+            entry.getValue().active = !busy && this.toolsTab && entry.getKey() != this.rsyncModeDraft;
+        }
+        this.visibilityButton.active = !busy && connection;
         this.cancelButton.active = !this.saving;
         String validationError = null;
         try {
@@ -244,12 +336,15 @@ public final class SharedWorldSettingsScreen extends Screen {
                 this.protocolButton.setMessage(this.protocolCaption());
                 this.portField.setValue(Integer.toString(settings.serverPort()));
                 this.tokenField.setValue(settings.token());
+                this.rsyncModeDraft = settings.rsyncMode();
+                this.rsyncPathField.setValue(settings.rsyncPath());
+                this.sshPathField.setValue(settings.sshPath());
             } else {
                 this.ioError = "error.load_failed";
             }
             this.updateControls();
             if (client.screen == this) {
-                this.setInitialFocus(this.domainField);
+                this.setInitialFocus(this.toolsTab ? this.connectionTabButton : this.domainField);
             }
         }));
     }
@@ -335,12 +430,28 @@ public final class SharedWorldSettingsScreen extends Screen {
         super.render(graphics, mouseX, mouseY, partialTick);
         graphics.drawCenteredString(this.font, this.title, this.width / 2, 12, TEXT_COLOR);
         graphics.drawCenteredString(this.font, label("subtitle"), this.width / 2, 28, SECONDARY_COLOR);
-        graphics.drawString(this.font, label("protocol"), this.formX, this.formY, TEXT_COLOR);
-        graphics.drawString(this.font, label("domain"), this.formX + PROTOCOL_WIDTH + GAP, this.formY, TEXT_COLOR);
-        graphics.drawString(this.font, label("port"), this.formX + this.formWidth - PORT_WIDTH, this.formY, TEXT_COLOR);
-        graphics.drawString(this.font, label("player_name"), this.formX, this.formY + 44, TEXT_COLOR);
-        graphics.drawString(this.font, label("token"), this.formX, this.formY + 88, TEXT_COLOR);
-        int y = this.formY + 132;
+        if (this.toolsTab) {
+            graphics.drawString(this.font, Component.translatable(PREFIX + "rsync_mode", modeLabel(this.rsyncModeDraft)),
+                this.formX, this.formY, TEXT_COLOR);
+            if (this.rsyncModeDraft == RsyncMode.CUSTOM) {
+                graphics.drawString(this.font, label("rsync_path"), this.formX, this.formY + ROW_HEIGHT, TEXT_COLOR);
+                graphics.drawString(this.font, label("ssh_path"), this.formX, this.formY + ROW_HEIGHT * 2, TEXT_COLOR);
+            } else {
+                int descriptionY = this.formY + ROW_HEIGHT;
+                Component description = label("rsync_mode." + this.rsyncModeDraft.name().toLowerCase(Locale.ROOT) + "_tooltip");
+                for (var line : this.font.split(description, this.formWidth)) {
+                    graphics.drawString(this.font, line, this.formX, descriptionY, SECONDARY_COLOR);
+                    descriptionY += this.font.lineHeight + 1;
+                }
+            }
+        } else {
+            graphics.drawString(this.font, label("protocol"), this.formX, this.formY, TEXT_COLOR);
+            graphics.drawString(this.font, label("domain"), this.formX + PROTOCOL_WIDTH + GAP, this.formY, TEXT_COLOR);
+            graphics.drawString(this.font, label("port"), this.formX + this.formWidth - PORT_WIDTH, this.formY, TEXT_COLOR);
+            graphics.drawString(this.font, label("player_name"), this.formX, this.formY + ROW_HEIGHT, TEXT_COLOR);
+            graphics.drawString(this.font, label("token"), this.formX, this.formY + ROW_HEIGHT * 2, TEXT_COLOR);
+        }
+        int y = this.formY + ROW_HEIGHT * 3 + 4;
         int color = this.loading || this.saving ? SECONDARY_COLOR : ERROR_COLOR;
         for (var line : this.font.split(this.status, this.formWidth)) {
             graphics.drawString(this.font, line, this.formX, y, color);

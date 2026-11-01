@@ -1,5 +1,7 @@
 package top.kmar.mc.worldreplay.client;
 
+import top.kmar.mc.worldreplay.sync.RsyncTools;
+
 import javax.net.ssl.SSLException;
 import java.io.IOException;
 import java.net.http.HttpClient;
@@ -34,8 +36,11 @@ public final class ClientSettingsVerifier {
     }
 
     /** 可注入受信任的测试客户端和超时；生产入口始终使用默认 HTTPS 校验。 */
-    static void verifyAndSave(ClientConnectionSettings settings, String playerName, Path file,
-                              HttpClient client, Duration timeout) throws IOException {
+    static void verifyAndSave(
+        ClientConnectionSettings settings, String playerName, Path file,
+        HttpClient client, Duration timeout
+    ) throws IOException {
+        RsyncTools.validate(settings.rsyncMode(), settings.rsyncPath(), settings.sshPath());
         String credentials = Base64.getEncoder().encodeToString(
             (playerName + ":" + settings.token()).getBytes(StandardCharsets.UTF_8));
         int status;
@@ -83,6 +88,9 @@ public final class ClientSettingsVerifier {
         if (error instanceof VerificationException verification) {
             return verification.errorKey();
         }
+        if (error instanceof RsyncTools.ValidationException validation) {
+            return validation.errorKey();
+        }
         return error instanceof SettingsWriteException ? "error.save_failed" : "error.operation_failed";
     }
 
@@ -107,6 +115,7 @@ public final class ClientSettingsVerifier {
         private SettingsWriteException(IOException cause) {
             super("Unable to write WorldRelay settings", cause);
         }
+
     }
 
     /** 只暴露预定义错误键，不将请求、Token 或服务端响应体放入异常信息。 */
@@ -126,5 +135,7 @@ public final class ClientSettingsVerifier {
         public String errorKey() {
             return this.errorKey;
         }
+
     }
+
 }

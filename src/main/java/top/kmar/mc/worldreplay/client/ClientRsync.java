@@ -8,6 +8,7 @@ import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
 import net.neoforged.fml.loading.FMLPaths;
 import top.kmar.mc.worldreplay.WorldRelay;
 import top.kmar.mc.worldreplay.sync.BundledRsync;
+import top.kmar.mc.worldreplay.sync.RsyncTools;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -18,44 +19,34 @@ import java.util.concurrent.CompletionException;
 @EventBusSubscriber(modid = WorldRelay.MODID, value = Dist.CLIENT)
 public final class ClientRsync {
 
-    private static CompletableFuture<BundledRsync.Executables> preparation;
-
     private ClientRsync() {
     }
 
     @SubscribeEvent
     public static void onClientSetup(FMLClientSetupEvent event) {
-        if (BundledRsync.isNotSupportedPlatform()) {
-            WorldRelay.LOGGER.info("Skipping bundled rsync extraction: only Windows x64 is supported");
-            return;
-        }
         prepare().whenComplete((tools, error) -> {
-            if (error != null) {
-                WorldRelay.LOGGER.error("Failed to extract bundled rsync; preparation can be retried", error);
+            if (error instanceof CompletionException && error.getCause() instanceof UnsupportedOperationException) {
+                WorldRelay.LOGGER.info("No bundled rsync for this platform; a custom path can be configured in settings");
+            } else if (error != null) {
+                WorldRelay.LOGGER.error("Failed to prepare rsync; check the configured path or retry", error);
             } else {
-                WorldRelay.LOGGER.info("Bundled rsync extracted to {}", tools.rsync().getParent());
+                WorldRelay.LOGGER.info("WorldRelay rsync prepared at {}", tools.rsync());
             }
         });
     }
 
     /** 不阻塞调用线程；调用方应组合异步流程，不要在渲染或服务器线程 join/get。 */
-    public static synchronized CompletableFuture<BundledRsync.Executables> prepare() {
-        if (BundledRsync.isNotSupportedPlatform()) {
-            return CompletableFuture.failedFuture(
-                new UnsupportedOperationException("Bundled rsync is only available for Windows x64"));
-        }
-        if (preparation == null || preparation.isCompletedExceptionally()) {
-            Path gameDirectory = FMLPaths.GAMEDIR.get();
-            preparation = CompletableFuture.supplyAsync(() -> {
-                try {
-                    return BundledRsync.extract(gameDirectory);
-                } catch (IOException e) {
-                    throw new CompletionException(e);
-                }
-            }, Util.ioPool());
-        }
-        // 避免调用方取消或手动完成所有同步操作共用的 future。
-        return preparation.copy();
+    public static CompletableFuture<BundledRsync.Executables> prepare() {
+        Path gameDirectory = FMLPaths.GAMEDIR.get();
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                // 每次读取原子保存后的配置，避免继续使用修改设置之前缓存的程序路径。
+                var settings = ClientConnectionSettings.load(gameDirectory.resolve("config/worldrelay-client.json"));
+                return RsyncTools.prepare(gameDirectory, settings.rsyncMode(), settings.rsyncPath(), settings.sshPath());
+            } catch (IOException e) {
+                throw new CompletionException(e);
+            }
+        }, Util.ioPool());
     }
 
 }
