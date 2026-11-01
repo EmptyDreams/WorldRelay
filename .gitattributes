@@ -3,3 +3,6 @@
 # are changed when only line endings change.
 src/generated/**/.cache/* text eol=lf
 src/generated/**/*.json text eol=lf
+
+# Preserve bundled tool/notice bytes for SHA-256 verification across checkouts.
+src/main/resources/worldrelay/tools/** -text
