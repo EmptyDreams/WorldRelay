@@ -9,17 +9,15 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.Base64;
-import java.util.HashSet;
-import java.util.List;
-import java.util.ArrayList;
-import java.util.Set;
+import java.util.*;
 
 /** 世界摘要查询；仅在 IO 线程调用，不获取所有权或打开本地存档。 */
 final class SharedWorldListClient {
+
     private static final Set<String> STATUSES = Set.of("FREE", "RUNNING", "COMMITTING", "RECOVERY_REQUIRED", "OWNED_OFFLINE");
 
-    private SharedWorldListClient() {}
+    private SharedWorldListClient() {
+    }
 
     static List<Summary> fetch(ClientConnectionSettings settings, String playerName) throws IOException {
         try (var client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5))
@@ -58,12 +56,13 @@ final class SharedWorldListClient {
                 }
                 var host = world.get("hostName");
                 var count = world.get("playerCount");
+                var lastCommittedAt = world.get("lastCommittedAt");
                 Integer players = count.isJsonNull() ? null : count.getAsBigDecimal().intValueExact();
                 if (players != null && players < 0) {
                     throw new IllegalArgumentException();
                 }
                 result.add(new Summary(id, name, status, host.isJsonNull() ? null : requiredString(world, "hostName"),
-                    players, requiredString(world, "lastCommittedAt")));
+                    players, lastCommittedAt.isJsonNull() ? null : requiredString(world, "lastCommittedAt")));
             }
             return List.copyOf(result);
         } catch (RuntimeException e) {
@@ -80,5 +79,8 @@ final class SharedWorldListClient {
     }
 
     record Summary(String worldId, String name, String status, String hostName, Integer playerCount,
-                   String lastCommittedAt) {}
+                   String lastCommittedAt) {
+
+    }
+
 }

@@ -20,7 +20,7 @@ public final class LocalRegistrationHandler implements HttpHandler {
     public void handle(HttpExchange exchange) throws IOException {
         exchange.getResponseHeaders().set("Cache-Control", "no-store");
         if (isNotLocal(exchange.getLocalAddress()) || isNotLocal(exchange.getRemoteAddress())) {
-            HttpResponses.error(exchange, 403, "LOCAL_ACCESS_REQUIRED", "Registration requires 127.0.0.1");
+            HttpResponses.error(exchange, 403, "LOCAL_ACCESS_REQUIRED", "Local management requires 127.0.0.1");
             return;
         }
         next.handle(exchange);

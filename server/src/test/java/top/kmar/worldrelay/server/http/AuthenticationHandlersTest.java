@@ -4,8 +4,9 @@ import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpContext;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpPrincipal;
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -21,11 +22,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @Timeout(15)
 class AuthenticationHandlersTest {
 
-    /** 验证注册仅允许本地地址和真实对端均为 127.0.0.1 的连接，伪造转发头不能绕过限制。 */
-    @Test
-    void registrationRequiresExactSocketAddressesAndIgnoresForwardingHeaders() throws Exception {
+    /** 验证注册和创建世界均只允许本地地址与真实对端同为 127.0.0.1，伪造转发头不能绕过限制。 */
+    @ParameterizedTest
+    @ValueSource(strings = {"/api/v1/register", "/api/v1/worlds"})
+    void registrationRequiresExactSocketAddressesAndIgnoresForwardingHeaders(String path) throws Exception {
         LocalRegistrationHandler handler = new LocalRegistrationHandler(exchange -> HttpResponses.noContent(exchange, 204));
         AddressExchange local = new AddressExchange("127.0.0.1", "127.0.0.1");
+        local.path = path;
         // 转发头既不能授予权限，也不能改变真实本地连接的身份。
         local.getRequestHeaders().set("X-Forwarded-For", "192.0.2.1");
         handler.handle(local);
@@ -33,6 +36,7 @@ class AuthenticationHandlersTest {
         for (String[] addresses : new String[][]{{"127.0.0.1", "192.0.2.1"}, {"127.0.0.1", "127.0.0.2"},
             {"127.0.0.1", "::1"}, {"0.0.0.0", "127.0.0.1"}}) {
             AddressExchange rejected = new AddressExchange(addresses[0], addresses[1]);
+            rejected.path = path;
             rejected.getRequestHeaders().set("X-Forwarded-For", "127.0.0.1");
             rejected.getRequestHeaders().set("Forwarded", "for=127.0.0.1");
             handler.handle(rejected);
@@ -51,6 +55,7 @@ class AuthenticationHandlersTest {
         private final Headers responseHeaders = new Headers();
         private final ByteArrayOutputStream body = new ByteArrayOutputStream();
         private int status = -1;
+        private String path;
 
         AddressExchange(String local, String remote) {
             this.local = new InetSocketAddress(local, 8081);
@@ -69,7 +74,7 @@ class AuthenticationHandlersTest {
 
         @Override
         public URI getRequestURI() {
-            return URI.create("/api/v1/register");
+            return URI.create(path);
         }
 
         @Override

@@ -7,6 +7,7 @@ import top.kmar.worldrelay.server.auth.UserStore;
 import top.kmar.worldrelay.server.http.BasicAuthenticationHandler;
 import top.kmar.worldrelay.server.http.HttpResponses;
 import top.kmar.worldrelay.server.json.JsonReader;
+import top.kmar.worldrelay.server.world.WorldStore;
 
 import java.net.InetAddress;
 import java.net.ServerSocket;
@@ -35,7 +36,7 @@ class WorldRelayServiceTest {
     Path directory;
 
     private ServerConfig config() {
-        return new ServerConfig("127.0.0.1", 0, 32, 0, 0, directory.resolve("users.json"));
+        return new ServerConfig("127.0.0.1", 0, 32, 0, 0, directory.resolve("users.json"), directory.resolve("worlds"));
     }
 
     /** 验证中文用户名注册、重复注册拒绝、Basic 鉴权及重启后凭据有效，且文件和日志不泄露原密钥。 */
@@ -81,7 +82,7 @@ class WorldRelayServiceTest {
                 HttpResponse<String> worlds = send(client, api(service, "/api/v1/worlds")
                     .header("Authorization", basic("小明🌍", key)).GET().build());
                 assertEquals(200, worlds.statusCode());
-                assertTrue(worlds.body().contains("\"mock\":true"));
+                assertEquals("{\"mock\":false,\"worlds\":[]}", worlds.body());
             }
             try (WorldRelayService restarted = new WorldRelayService(config())) {
                 restarted.start();
@@ -166,7 +167,7 @@ class WorldRelayServiceTest {
         }
     }
 
-    /** 验证业务端口被占用导致启动失败时关闭已启动的注册监听器、释放文件锁，并禁止重启该实例。 */
+    /** 验证业务端口被占用导致启动失败时关闭本机管理监听器、释放用户和世界存储锁，并禁止重启该实例。 */
     @Test
     void startupFailureClosesRegistrationListenerAndReleasesStoreLock() throws Exception {
         InetAddress loopback = InetAddress.getByName("127.0.0.1");
@@ -176,7 +177,7 @@ class WorldRelayServiceTest {
         }
         try (ServerSocket occupiedApi = new ServerSocket(0, 0, loopback)) {
             ServerConfig config = new ServerConfig("127.0.0.1", occupiedApi.getLocalPort(), 32, 0,
-                registrationPort, directory.resolve("users.json"));
+                registrationPort, directory.resolve("users.json"), config().worldsDirectory());
             try (WorldRelayService service = new WorldRelayService(config)) {
                 assertThrows(java.io.IOException.class, service::start);
                 assertThrows(IllegalStateException.class, service::apiAddress);
@@ -185,9 +186,11 @@ class WorldRelayServiceTest {
         }
         try (
             ServerSocket ignored = new ServerSocket(registrationPort, 0, loopback);
-            UserStore users = UserStore.open(config().usersFile())
+            UserStore users = UserStore.open(config().usersFile());
+            WorldStore worlds = WorldStore.open(config().worldsDirectory())
         ) {
             assertNotNull(users.register("after-failure"));
+            assertTrue(worlds.list().isEmpty());
         }
     }
 

@@ -2,7 +2,7 @@ package top.kmar.worldrelay.server.protocol;
 
 import top.kmar.worldrelay.server.json.JsonWriter;
 
-/** 共享世界列表的展示摘要，不代表已经取得所有权或可以直接连接。 */
+/** 共享世界列表的展示摘要；lastCommittedAt 为 null 表示尚未提交，不代表已取得所有权或可以连接。 */
 public record WorldSummary(
     String worldId,
     String name,
@@ -30,7 +30,13 @@ public record WorldSummary(
         } else {
             writer.value(playerCount);
         }
-        writer.name("lastCommittedAt").value(lastCommittedAt).endObject();
+        writer.name("lastCommittedAt");
+        if (lastCommittedAt == null) {
+            writer.nullValue();
+        } else {
+            writer.value(lastCommittedAt);
+        }
+        writer.endObject();
     }
 
 }

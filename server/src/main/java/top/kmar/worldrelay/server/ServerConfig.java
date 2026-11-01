@@ -11,11 +11,11 @@ import java.util.Set;
 
 /** HTTP 服务配置；类初始化期间不读取文件或部署环境配置。 */
 public record ServerConfig(String bindAddress, int port, int maxConcurrentRequests, int shutdownGraceSeconds,
-                           int registrationPort, Path usersFile) {
+                           int registrationPort, Path usersFile, Path worldsDirectory) {
 
     private static final Set<String> KEYS = Set.of(
         "http.bind-address", "http.port", "http.max-concurrent-requests", "http.shutdown-grace-seconds",
-        "registration.port", "auth.users-file"
+        "registration.port", "auth.users-file", "worlds.directory"
     );
 
     public ServerConfig {
@@ -43,6 +43,18 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
         if (usersFile.toString().isBlank() || usersFile.getFileName() == null) {
             throw new IllegalArgumentException("auth.users-file must name a file");
         }
+        Objects.requireNonNull(worldsDirectory, "worldsDirectory");
+        if (worldsDirectory.toString().isBlank()) {
+            throw new IllegalArgumentException("worlds.directory must name a directory");
+        }
+    }
+
+    public ServerConfig(
+        String bindAddress, int port, int maxConcurrentRequests, int shutdownGraceSeconds,
+        int registrationPort, Path usersFile
+    ) {
+        this(bindAddress, port, maxConcurrentRequests, shutdownGraceSeconds, registrationPort, usersFile,
+            Path.of("data/worlds"));
     }
 
     public ServerConfig(String bindAddress, int port, int maxConcurrentRequests, int shutdownGraceSeconds) {
@@ -80,7 +92,8 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
             integer(properties, "http.max-concurrent-requests", defaults.maxConcurrentRequests()),
             integer(properties, "http.shutdown-grace-seconds", defaults.shutdownGraceSeconds()),
             integer(properties, "registration.port", defaults.registrationPort()),
-            Path.of(properties.getProperty("auth.users-file", defaults.usersFile().toString()))
+            Path.of(properties.getProperty("auth.users-file", defaults.usersFile().toString())),
+            Path.of(properties.getProperty("worlds.directory", defaults.worldsDirectory().toString()))
         );
     }
 
