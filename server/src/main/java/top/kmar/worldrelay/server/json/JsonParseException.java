@@ -14,6 +14,8 @@ public final class JsonParseException extends IllegalArgumentException {
         this.position = position;
     }
 
+    /** 供解析器调用方按 UTF-16 偏移定位错误；HTTP 接口仅返回统一错误，不公开解析细节。 */
+    @SuppressWarnings("unused")
     public int position() {
         return position;
     }

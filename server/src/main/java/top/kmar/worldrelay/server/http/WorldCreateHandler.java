@@ -10,7 +10,6 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
 import java.util.Objects;
 
 /** 仅装配在本机管理监听器上；登记世界，不生成 Minecraft 存档。 */
@@ -25,12 +24,7 @@ public final class WorldCreateHandler implements HttpHandler {
 
     @Override
     public void handle(HttpExchange exchange) throws IOException {
-        List<String> contentTypes = exchange.getRequestHeaders().get("Content-Type");
-        if (contentTypes == null || contentTypes.size() != 1
-            || !contentTypes.getFirst().split(";", 2)[0].strip().equalsIgnoreCase("application/json")) {
-            HttpResponses.error(exchange, 415, "UNSUPPORTED_MEDIA_TYPE", "Expected application/json in UTF-8");
-            return;
-        }
+        if (HttpRequests.rejectNonJsonContentType(exchange)) return;
         byte[] body = exchange.getRequestBody().readNBytes(MAX_BODY_BYTES + 1);
         if (body.length > MAX_BODY_BYTES) {
             exchange.getResponseHeaders().set("Connection", "close");

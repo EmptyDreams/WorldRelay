@@ -14,6 +14,29 @@ class ServerConfigTest {
     @TempDir
     Path directory;
 
+    /** 验证 SSH 公钥文件和传输目录默认随用户文件隔离，部署配置可独立指定路径及 rrsync 程序。 */
+    @Test
+    void loadsSshRegistrationPathsAndRejectsEmptyValues() throws Exception {
+        Path file = directory.resolve("ssh.properties");
+        Files.writeString(file, "auth.users-file=custom/users.json\n");
+        var defaults = ServerConfig.load(file).ssh();
+        assertEquals(Path.of("custom/ssh/authorized_keys"), defaults.authorizedKeysFile());
+        assertEquals(Path.of("custom/transfers"), defaults.transferDirectory());
+        Files.writeString(file, """
+            ssh.authorized-keys-file=keys/authorized_keys
+            ssh.transfer-directory=staging/users
+            ssh.rrsync-command=/usr/local/bin/rrsync
+            """);
+        var ssh = ServerConfig.load(file).ssh();
+        assertEquals(Path.of("keys/authorized_keys"), ssh.authorizedKeysFile());
+        assertEquals(Path.of("staging/users"), ssh.transferDirectory());
+        assertEquals("/usr/local/bin/rrsync", ssh.rrsyncCommand());
+        for (String key : new String[]{"ssh.authorized-keys-file", "ssh.transfer-directory", "ssh.rrsync-command"}) {
+            Files.writeString(file, key + "=\n");
+            assertThrows(IllegalArgumentException.class, () -> ServerConfig.load(file));
+        }
+    }
+
     /**
      * 验证心跳默认间隔为 10 秒、超时为 30 秒，且配置文件能覆盖这两个值。
      * 非正间隔、超时不大于间隔以及非整数配置均必须拒绝加载。

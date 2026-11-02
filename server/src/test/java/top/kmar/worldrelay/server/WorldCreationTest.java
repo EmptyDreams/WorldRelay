@@ -35,6 +35,7 @@ class WorldCreationTest {
     /**
      * 验证本机无需凭据即可创建世界，重复名称返回 409，业务列表仍需鉴权且两个端口的方法互相隔离；
      * 世界记录和名称约束重启后保留，停服删除一个目录后只移除目标世界，原用户凭据仍可查询列表。
+     * 列表认证使用普通注册返回的 API 密钥，覆盖注册接口同时生成 SSH 凭据后的世界管理回归场景。
      */
     @Test
     void createsLocallyRejectsDuplicateNamesAndPersistsUntilFolderDeletion() throws Exception {
@@ -135,9 +136,12 @@ class WorldCreationTest {
         }
     }
 
+    /** 为世界列表回归测试创建非覆盖注册用户，只提取返回的 API 密钥构造 Basic 凭据。 */
     private String registerUser() throws Exception {
         try (UserStore users = UserStore.open(config().usersFile())) {
-            String key = users.register("玩家");
+            var registration = users.register("玩家", false);
+            assertNotNull(registration, "测试前置条件：世界列表查询用户应注册成功");
+            String key = registration.key();
             return "Basic " + Base64.getEncoder().encodeToString(("玩家:" + key).getBytes(StandardCharsets.UTF_8));
         }
     }

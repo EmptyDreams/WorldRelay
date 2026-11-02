@@ -239,13 +239,14 @@ public final class WorldStore implements AutoCloseable {
         Objects.requireNonNull(stage);
         Entry entry = owned(worldId, identity);
         var state = entry.metadata.state();
+        boolean stopping = state.phase() == WorldPhase.STOPPING || state.phase() == WorldPhase.COMMITTING;
         if (stage == StopStage.BEGIN) {
-            if (state.phase() != WorldPhase.STOPPING && state.phase() != WorldPhase.COMMITTING) {
+            if (!stopping) {
                 persist(entry, state.transition(WorldPhase.STOPPING, null));
             }
         } else {
             checkBase(state, baseVersion);
-            if (state.phase() != WorldPhase.STOPPING && state.phase() != WorldPhase.COMMITTING) {
+            if (!stopping) {
                 throw conflict("INVALID_PHASE", "Stop must begin before upload completion");
             }
             // 这里只持久化客户端上传完成的声明，没有校验、发布或解锁副作用。

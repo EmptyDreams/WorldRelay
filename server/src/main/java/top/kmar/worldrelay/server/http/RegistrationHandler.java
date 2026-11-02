@@ -10,7 +10,6 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
 import java.util.Objects;
 
 /** 只装配在独立的本地注册监听器上。 */
@@ -25,27 +24,26 @@ public final class RegistrationHandler implements HttpHandler {
 
     @Override
     public void handle(HttpExchange exchange) throws IOException {
-        List<String> contentTypes = exchange.getRequestHeaders().get("Content-Type");
-        if (contentTypes == null || contentTypes.size() != 1
-            || !contentTypes.getFirst().split(";", 2)[0].strip().equalsIgnoreCase("application/json")) {
-            HttpResponses.error(exchange, 415, "UNSUPPORTED_MEDIA_TYPE", "Expected application/json in UTF-8");
-            return;
-        }
+        if (HttpRequests.rejectNonJsonContentType(exchange)) return;
         byte[] body = exchange.getRequestBody().readNBytes(MAX_BODY_BYTES + 1);
         if (body.length > MAX_BODY_BYTES) {
             exchange.getResponseHeaders().set("Connection", "close");
             HttpResponses.error(exchange, 413, "PAYLOAD_TOO_LARGE", "Registration body exceeds 4096 bytes");
             return;
         }
-        String username;
+        String username = null;
+        boolean overwrite = false;
         try {
             String json = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(body)).toString();
             JsonReader reader = new JsonReader(json, MAX_BODY_BYTES, 4);
             reader.beginObject();
-            if (!reader.nextName().equals("username")) {
-                throw new IllegalArgumentException("Expected username");
+            while (reader.hasNext()) {
+                switch (reader.nextName()) {
+                    case "username" -> username = reader.nextString();
+                    case "overwrite" -> overwrite = reader.nextBoolean();
+                    default -> throw new IllegalArgumentException("Unknown registration field");
+                }
             }
-            username = reader.nextString();
             reader.endObject();
             reader.finish();
             UserStore.validateUsername(username);
@@ -53,14 +51,24 @@ public final class RegistrationHandler implements HttpHandler {
             HttpResponses.error(exchange, 400, "INVALID_REGISTRATION", "Expected a valid username");
             return;
         }
-        String key = users.register(username);
-        if (key == null) {
+        UserStore.Registration registration;
+        try {
+            registration = users.register(username, overwrite);
+        } catch (UserStore.AuthorizationConflictException conflict) {
+            HttpResponses.error(exchange, 409, "AUTHORIZED_KEYS_CONFLICT", "Username has an unmanaged or ambiguous SSH authorization");
+            return;
+        }
+        if (registration == null) {
             HttpResponses.error(exchange, 409, "USERNAME_EXISTS", "Username already registered");
             return;
         }
         String json = new JsonWriter().beginObject()
-            .name("username").value(username).name("key").value(key).endObject().finish();
-        HttpResponses.bytes(exchange, 201, "application/json; charset=utf-8", json.getBytes(StandardCharsets.UTF_8));
+            .name("username").value(username).name("key").value(registration.key())
+            .name("publicKey").value(registration.publicKey()).name("privateKey").value(registration.privateKey())
+            .endObject().finish();
+        exchange.getResponseHeaders().set("Cache-Control", "no-store");
+        HttpResponses.bytes(exchange, registration.overwritten() ? 200 : 201,
+            "application/json; charset=utf-8", json.getBytes(StandardCharsets.UTF_8));
     }
 
 }

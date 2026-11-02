@@ -15,22 +15,28 @@ class UserStoreTest {
     @TempDir
     Path directory;
 
-    /** 验证仅持久化密钥摘要、重启后凭据有效、用户名区分大小写，且重复注册不替换原密钥。 */
+    /**
+     * 验证普通注册返回的 API 密钥可以认证，用户 JSON 不保存原密钥，重启后认证仍然有效。
+     * 用户名区分大小写；未指定覆盖时，同名注册返回 null，并且原密钥继续有效。
+     */
     @Test
     void persistsOnlyDigestsAndKeepsOriginalKeyOnDuplicateRegistration() throws Exception {
         Path file = directory.resolve("users.json");
         String key;
         try (UserStore store = UserStore.open(file)) {
-            key = store.register("小明🌍");
-            //noinspection DataFlowIssue
+            var registration = store.register("小明🌍", false);
+            assertNotNull(registration, "测试前置条件：首次注册应成功");
+            key = registration.key();
             assertTrue(key.matches("[A-Za-z0-9_-]{43}"));
             assertTrue(store.verify("小明🌍", key));
-            assertNull(store.register("小明🌍"));
+            assertNull(store.register("小明🌍", false));
             assertTrue(store.verify("小明🌍", key));
             assertFalse(store.verify("其他人", key));
             assertFalse(store.verify("小明🌍", "wrong"));
-            assertNotEquals(key, store.register("Alice"));
-            assertNotNull(store.register("alice"));
+            var alice = store.register("Alice", false);
+            assertNotNull(alice, "测试前置条件：不同用户名应注册成功");
+            assertNotEquals(key, alice.key());
+            assertNotNull(store.register("alice", false));
         }
         String persisted = Files.readString(file);
         assertFalse(persisted.contains(key));
@@ -43,7 +49,10 @@ class UserStoreTest {
         }
     }
 
-    /** 验证文件锁阻止多个存储实例同时打开同一文件，关闭后释放锁且禁止继续注册。 */
+    /**
+     * 验证用户文件及其等价路径不能被两个存储实例同时打开，防止并发修改同一份用户数据。
+     * 关闭后原实例禁止注册，重新打开的实例可以注册，确认文件锁已释放且关闭操作可重复调用。
+     */
     @Test
     void fileLockPreventsConcurrentStoresAndIsReleasedOnClose() throws Exception {
         Path file = directory.resolve("users.json");
@@ -53,25 +62,30 @@ class UserStoreTest {
             assertThrows(IOException.class, () -> UserStore.open(directory.resolve("./users.json")));
         }
         first.close();
-        assertThrows(IllegalStateException.class, () -> first.register("closed"));
+        assertThrows(IllegalStateException.class, () -> first.register("closed", false));
         try (UserStore reopened = UserStore.open(file)) {
-            assertNotNull(reopened.register("after-close"));
+            assertNotNull(reopened.register("after-close", false));
         }
     }
 
-    /** 验证用户文件发布失败时不使新用户生效，清理临时文件，并允许排除故障后重试注册。 */
+    /**
+     * 用同名目录阻止用户 JSON 写入，验证注册失败不会使新用户生效，也不会覆盖障碍目录。
+     * 移除障碍后可重新注册并使用返回的 API 密钥认证，且注册过程不遗留临时文件。
+     */
     @Test
     void failedPublicationDoesNotAuthenticateUserAndCanBeRetried() throws Exception {
         Path file = directory.resolve("users.json");
         try (UserStore store = UserStore.open(file)) {
             Files.createDirectory(file);
             Files.writeString(file.resolve("blocker"), "prevent replacement");
-            assertThrows(IOException.class, () -> store.register("retry"));
+            assertThrows(IOException.class, () -> store.register("retry", false));
             assertFalse(store.verify("retry", "anything"));
             assertTrue(Files.isDirectory(file));
             Files.delete(file.resolve("blocker"));
             Files.delete(file);
-            String key = store.register("retry");
+            var retried = store.register("retry", false);
+            assertNotNull(retried, "测试前置条件：排除写入故障后应注册成功");
+            String key = retried.key();
             assertTrue(store.verify("retry", key));
         }
         try (var files = Files.list(directory)) {
@@ -79,7 +93,10 @@ class UserStoreTest {
         }
     }
 
-    /** 验证损坏或不可读取的用户文件会阻止打开，不改写损坏内容，并在失败后释放文件锁。 */
+    /**
+     * 验证空文件、损坏 JSON、重复用户名、非法摘要及非法用户名均被拒绝加载，原文件内容保持不变。
+     * 每次失败都释放文件锁，修复文件后可以正常注册；用户文件路径被目录占用时同样拒绝打开。
+     */
     @Test
     void corruptOrUnreadableStoreFailsClosedAndReleasesLock() throws Exception {
         Path file = directory.resolve("users.json");
@@ -92,7 +109,7 @@ class UserStoreTest {
         }
         Files.writeString(file, "{}");
         try (UserStore store = UserStore.open(file)) {
-            assertNotNull(store.register("ok"));
+            assertNotNull(store.register("ok", false));
         }
         Files.delete(file);
         Files.createDirectory(file);

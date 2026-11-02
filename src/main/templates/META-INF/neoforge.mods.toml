@@ -44,9 +44,10 @@ config="${mod_id}.mixins.json"
 #file="META-INF/accesstransformer.cfg"
 
 # A dependency - use the . to indicate dependency for a specific modid. Dependencies are optional.
-[[dependencies.${mod_id}]] #optional
+[[dependencies."${mod_id}"]] #optional
     # the modid of the dependency
-    modId="neoforge" #mandatory
+    # 内置依赖 ID 由 Gradle 展开，生成文件中的实际值仍为 neoforge。
+    modId="${neoforge_mod_id}" #mandatory
     # The type of the dependency. Can be one of "required", "optional", "incompatible" or "discouraged" (case insensitive).
     # 'required' requires the mod to exist, 'optional' does not
     # 'incompatible' will prevent the game from loading when the mod exists, and 'discouraged' will show a warning
@@ -63,8 +64,9 @@ config="${mod_id}.mixins.json"
     side="BOTH"
 
 # Here's another dependency
-[[dependencies.${mod_id}]]
-    modId="minecraft"
+[[dependencies."${mod_id}"]]
+    # 内置依赖 ID 由 Gradle 展开，生成文件中的实际值仍为 minecraft。
+    modId="${minecraft_mod_id}"
     type="required"
     # This version range declares a minimum of the current minecraft version up to but not including the next major version
     versionRange="${minecraft_version_range}"

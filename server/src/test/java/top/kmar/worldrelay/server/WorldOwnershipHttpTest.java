@@ -40,12 +40,19 @@ class WorldOwnershipHttpTest {
         return new ServerConfig("127.0.0.1", 0, 32, 0, 0, directory.resolve("users.json"), directory.resolve("worlds"), 5, 20);
     }
 
-    /** 为每个用例建立独立的房主、访客和两个空闲世界，避免并发测试复用已持有的世界。 */
+    /**
+     * 为每个所有权 HTTP 用例分别普通注册房主和访客，从注册结果提取 API 密钥，供后续请求验证真实用户身份及越权拒绝。
+     * 同时创建两个独立空闲世界，确保不同用例及并发获取场景不会复用已经持有的世界。
+     */
     @BeforeEach
     void prepare() throws Exception {
         try (UserStore users = UserStore.open(config().usersFile())) {
-            auth = basic("房主", users.register("房主"));
-            guestAuth = basic("访客", users.register("访客"));
+            var host = users.register("房主", false);
+            var guest = users.register("访客", false);
+            assertNotNull(host, "测试前置条件：房主应注册成功");
+            assertNotNull(guest, "测试前置条件：访客应注册成功");
+            auth = basic("房主", host.key());
+            guestAuth = basic("访客", guest.key());
         }
         try (WorldStore worlds = WorldStore.open(config().worldsDirectory())) {
             var first = worlds.create("联机世界");

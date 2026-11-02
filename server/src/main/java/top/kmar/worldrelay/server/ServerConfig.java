@@ -1,5 +1,7 @@
 package top.kmar.worldrelay.server;
 
+import top.kmar.worldrelay.server.auth.SshRegistrationConfig;
+
 import java.io.IOException;
 import java.io.Reader;
 import java.nio.charset.StandardCharsets;
@@ -12,12 +14,13 @@ import java.util.Set;
 /** HTTP 服务配置；类初始化期间不读取文件或部署环境配置。 */
 public record ServerConfig(String bindAddress, int port, int maxConcurrentRequests, int shutdownGraceSeconds,
                            int registrationPort, Path usersFile, Path worldsDirectory,
-                           int heartbeatIntervalSeconds, int heartbeatTimeoutSeconds) {
+                           int heartbeatIntervalSeconds, int heartbeatTimeoutSeconds, SshRegistrationConfig ssh) {
 
     private static final Set<String> KEYS = Set.of(
         "http.bind-address", "http.port", "http.max-concurrent-requests", "http.shutdown-grace-seconds",
         "registration.port", "auth.users-file", "worlds.directory",
-        "ownership.heartbeat-interval-seconds", "ownership.heartbeat-timeout-seconds"
+        "ownership.heartbeat-interval-seconds", "ownership.heartbeat-timeout-seconds",
+        "ssh.authorized-keys-file", "ssh.transfer-directory", "ssh.rrsync-command"
     );
 
     public ServerConfig {
@@ -52,6 +55,15 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
         if (heartbeatIntervalSeconds < 1 || heartbeatTimeoutSeconds <= heartbeatIntervalSeconds) {
             throw new IllegalArgumentException("Heartbeat timeout must be greater than the positive interval");
         }
+        Objects.requireNonNull(ssh, "ssh");
+    }
+
+    public ServerConfig(
+        String bindAddress, int port, int maxConcurrentRequests, int shutdownGraceSeconds,
+        int registrationPort, Path usersFile, Path worldsDirectory, int heartbeatIntervalSeconds, int heartbeatTimeoutSeconds
+    ) {
+        this(bindAddress, port, maxConcurrentRequests, shutdownGraceSeconds, registrationPort, usersFile, worldsDirectory,
+            heartbeatIntervalSeconds, heartbeatTimeoutSeconds, SshRegistrationConfig.defaults(usersFile));
     }
 
     public ServerConfig(
@@ -99,16 +111,22 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
             }
         }
         ServerConfig defaults = defaults();
+        Path usersFile = Path.of(properties.getProperty("auth.users-file", defaults.usersFile().toString()));
+        SshRegistrationConfig sshDefaults = SshRegistrationConfig.defaults(usersFile);
         return new ServerConfig(
             properties.getProperty("http.bind-address", defaults.bindAddress()),
             integer(properties, "http.port", defaults.port()),
             integer(properties, "http.max-concurrent-requests", defaults.maxConcurrentRequests()),
             integer(properties, "http.shutdown-grace-seconds", defaults.shutdownGraceSeconds()),
             integer(properties, "registration.port", defaults.registrationPort()),
-            Path.of(properties.getProperty("auth.users-file", defaults.usersFile().toString())),
+            usersFile,
             Path.of(properties.getProperty("worlds.directory", defaults.worldsDirectory().toString())),
             integer(properties, "ownership.heartbeat-interval-seconds", defaults.heartbeatIntervalSeconds()),
-            integer(properties, "ownership.heartbeat-timeout-seconds", defaults.heartbeatTimeoutSeconds())
+            integer(properties, "ownership.heartbeat-timeout-seconds", defaults.heartbeatTimeoutSeconds()),
+            new SshRegistrationConfig(
+                Path.of(properties.getProperty("ssh.authorized-keys-file", sshDefaults.authorizedKeysFile().toString())),
+                Path.of(properties.getProperty("ssh.transfer-directory", sshDefaults.transferDirectory().toString())),
+                properties.getProperty("ssh.rrsync-command", sshDefaults.rrsyncCommand()))
         );
     }
 

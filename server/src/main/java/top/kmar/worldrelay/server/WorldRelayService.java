@@ -27,7 +27,7 @@ public final class WorldRelayService implements AutoCloseable {
             throw new IllegalStateException("Service cannot be started again");
         }
         try {
-            users = UserStore.open(config.usersFile());
+            users = UserStore.open(config.usersFile(), config.ssh());
             worlds = WorldStore.open(config.worldsDirectory(), config.heartbeatIntervalSeconds(), config.heartbeatTimeoutSeconds());
             HttpRouter registrationRouter = new HttpRouter();
             registrationRouter.register("POST", "/api/v1/register", new RegistrationHandler(users));

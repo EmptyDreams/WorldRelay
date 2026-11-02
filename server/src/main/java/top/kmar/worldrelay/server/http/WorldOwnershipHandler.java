@@ -15,7 +15,6 @@ import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
@@ -37,12 +36,7 @@ public final class WorldOwnershipHandler implements HttpHandler {
     @Override
     public void handle(HttpExchange exchange) throws IOException {
         exchange.getResponseHeaders().set("Cache-Control", "no-store");
-        List<String> types = exchange.getRequestHeaders().get("Content-Type");
-        if (types == null || types.size() != 1
-            || !types.getFirst().split(";", 2)[0].strip().equalsIgnoreCase("application/json")) {
-            HttpResponses.error(exchange, 415, "UNSUPPORTED_MEDIA_TYPE", "Expected application/json in UTF-8");
-            return;
-        }
+        if (HttpRequests.rejectNonJsonContentType(exchange)) return;
         byte[] bytes = exchange.getRequestBody().readNBytes(MAX_BODY_BYTES + 1);
         if (bytes.length > MAX_BODY_BYTES) {
             exchange.getResponseHeaders().set("Connection", "close");

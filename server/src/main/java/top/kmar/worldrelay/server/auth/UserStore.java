@@ -4,7 +4,6 @@ import top.kmar.worldrelay.server.json.JsonReader;
 import top.kmar.worldrelay.server.json.JsonWriter;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
@@ -24,26 +23,36 @@ public final class UserStore implements AutoCloseable {
     private final Path file;
     private final FileChannel lockChannel;
     private final FileLock fileLock;
+    private final RegistrationFiles files;
+    private final SshRegistrationConfig ssh;
+    private final boolean mungeSupported;
     private final SecureRandom random = new SecureRandom();
     private final Map<String, byte[]> users = new TreeMap<>();
+    private byte[] usersImage;
     private boolean closed;
 
-    private UserStore(Path file, FileChannel lockChannel, FileLock fileLock) {
+    private UserStore(Path file, FileChannel lockChannel, FileLock fileLock, RegistrationFiles files, SshRegistrationConfig ssh) {
         this.file = file;
         this.lockChannel = lockChannel;
         this.fileLock = fileLock;
+        this.files = files;
+        this.ssh = ssh;
+        this.mungeSupported = RrsyncCapabilities.supportsMunge(ssh.rrsyncCommand());
     }
 
     public static UserStore open(Path path) throws IOException {
-        Path file = path.toAbsolutePath().normalize();
-        Files.createDirectories(file.getParent());
-        // 解析父目录符号链接，避免同一路径的不同写法绕过旁路锁。
-        file = file.getParent().toRealPath().resolve(file.getFileName());
-        if (Files.isSymbolicLink(file)) {
-            throw new IOException("User store must not be a symbolic link");
-        }
+        return open(path, SshRegistrationConfig.defaults(path));
+    }
+
+    public static UserStore open(Path path, SshRegistrationConfig ssh) throws IOException {
+        return open(path, ssh, RegistrationFiles::atomicMove);
+    }
+
+    static UserStore open(Path path, SshRegistrationConfig ssh, RegistrationFiles.Publisher publisher) throws IOException {
+        Path file = RegistrationFiles.canonicalFile(path);
         FileChannel channel = FileChannel.open(file.resolveSibling(file.getFileName() + ".lock"),
-            StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+            StandardOpenOption.CREATE, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
+        RegistrationFiles files = null;
         try {
             FileLock lock;
             try {
@@ -54,10 +63,18 @@ public final class UserStore implements AutoCloseable {
             if (lock == null) {
                 throw new IOException("User store is already in use");
             }
-            UserStore store = new UserStore(file, channel, lock);
+            files = RegistrationFiles.open(file, ssh.authorizedKeysFile(), publisher);
+            UserStore store = new UserStore(file, channel, lock, files, ssh);
             store.load();
             return store;
         } catch (IOException | RuntimeException | Error failure) {
+            if (files != null) {
+                try {
+                    files.close();
+                } catch (IOException cleanupFailure) {
+                    failure.addSuppressed(cleanupFailure);
+                }
+            }
             try {
                 channel.close();
             } catch (IOException cleanupFailure) {
@@ -67,26 +84,45 @@ public final class UserStore implements AutoCloseable {
         }
     }
 
-    /** 返回原密钥一次；null 表示用户名已存在。失败不会发布到内存。 */
-    public synchronized String register(String username) throws IOException {
+    /** 返回凭据一次；未明确覆盖时重复用户名返回 null。私钥只存在于返回值中。 */
+    public synchronized Registration register(String username, boolean overwrite) throws IOException {
         ensureOpen();
+        if (files.isNotHealthy()) throw new IOException("User registration requires recovery");
         validateUsername(username);
-        if (users.containsKey(username)) {
+        boolean existing = users.containsKey(username);
+        if (existing && !overwrite) {
             return null;
         }
+        byte[] beforeKeys = RegistrationFiles.read(files.keys);
+        String originalKeys = beforeKeys == null ? "" : RegistrationFiles.utf8(beforeKeys);
+        // 先检查同名条目，冲突时不生成、替换或返回任何新凭据。
+        Path root = ssh.transferDirectory().toAbsolutePath().normalize();
+        Path directory = root.resolve(HexFormat.of().formatHex(digest(username)));
+        AuthorizedKeys.update(originalKeys, username, "ssh-ed25519 placeholder " + username, ssh.rrsyncCommand(), directory, mungeSupported);
+        SshKeyPair pair = SshKeyPair.generate(username, random);
         byte[] entropy = new byte[32];
         random.nextBytes(entropy);
         String key = Base64.getUrlEncoder().withoutPadding().encodeToString(entropy);
         byte[] hash = digest(key);
         Map<String, byte[]> updated = new TreeMap<>(users);
         updated.put(username, hash);
-        persist(updated);
+        byte[] afterUsers = serialize(updated);
+        Files.createDirectories(root);
+        root = root.toRealPath();
+        directory = root.resolve(directory.getFileName());
+        Files.createDirectories(directory);
+        if (!Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS)) throw new IOException("User transfer directory must be a real directory");
+        // 目录可能通过其父目录符号链接改变真实路径，授权命令始终使用最终确认的隔离目录。
+        String updatedKeys = AuthorizedKeys.update(originalKeys, username, pair.publicKey(), ssh.rrsyncCommand(), directory, mungeSupported);
+        files.commit(username, existing, usersImage, afterUsers, beforeKeys, updatedKeys.getBytes(StandardCharsets.UTF_8));
         users.put(username, hash);
-        return key;
+        usersImage = afterUsers;
+        return new Registration(username, key, pair.publicKey(), pair.privateKey(), existing);
     }
 
     public synchronized boolean verify(String username, String key) {
         ensureOpen();
+        if (files.isNotHealthy()) return false;
         byte[] expected = users.get(username);
         byte[] actual = digest(key);
         // 未知用户名也计算摘要并进行定长比较；不向调用方区分失败原因。
@@ -104,13 +140,9 @@ public final class UserStore implements AutoCloseable {
     }
 
     private void load() throws IOException {
-        String json;
-        try {
-            json = Files.readString(file, StandardCharsets.UTF_8);
-        } catch (NoSuchFileException missing) {
-            // 只有文件确实不存在才视为首次启动；其他读取错误必须阻止启动。
-            return;
-        }
+        usersImage = RegistrationFiles.read(file);
+        if (usersImage == null) return;
+        String json = RegistrationFiles.utf8(usersImage);
         try {
             JsonReader reader = new JsonReader(json, Integer.MAX_VALUE, 4);
             reader.beginObject();
@@ -131,25 +163,10 @@ public final class UserStore implements AutoCloseable {
         }
     }
 
-    private void persist(Map<String, byte[]> updated) throws IOException {
+    private static byte[] serialize(Map<String, byte[]> updated) {
         JsonWriter writer = new JsonWriter().beginObject();
         updated.forEach((username, hash) -> writer.name(username).value(HexFormat.of().formatHex(hash)));
-        byte[] json = writer.endObject().finish().getBytes(StandardCharsets.UTF_8);
-        Path temporary = Files.createTempFile(file.getParent(), ".users-", ".tmp");
-        try {
-            try (FileChannel output = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
-                ByteBuffer buffer = ByteBuffer.wrap(json);
-                while (buffer.hasRemaining()) {
-                    //noinspection ResultOfMethodCallIgnored
-                    output.write(buffer);
-                }
-                output.force(true);
-            }
-            // 不支持原子替换的文件系统直接失败，不降级为可能留下半份文件的覆盖写。
-            Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } finally {
-            Files.deleteIfExists(temporary);
-        }
+        return writer.endObject().finish().getBytes(StandardCharsets.UTF_8);
     }
 
     private static byte[] digest(String key) {
@@ -173,9 +190,27 @@ public final class UserStore implements AutoCloseable {
         }
         closed = true;
         try {
-            fileLock.release();
+            files.close();
         } finally {
-            lockChannel.close();
+            try {
+                fileLock.release();
+            } finally {
+                lockChannel.close();
+            }
+        }
+    }
+
+    public record Registration(String username, String key, String publicKey, String privateKey, boolean overwritten) {
+        @Override
+        @SuppressWarnings("NullableProblems")
+        public String toString() {
+            return "Registration[username=" + username + ", key=<redacted>, privateKey=<redacted>, overwritten=" + overwritten + "]";
+        }
+    }
+
+    public static final class AuthorizationConflictException extends IOException {
+        AuthorizationConflictException() {
+            super("Username has an unmanaged or ambiguous authorized_keys entry");
         }
     }
 

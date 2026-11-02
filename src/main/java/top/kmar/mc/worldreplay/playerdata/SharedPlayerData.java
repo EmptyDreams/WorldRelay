@@ -67,6 +67,8 @@ public final class SharedPlayerData {
         return sharedWorld && CREATION_APPROVALS.contains(request(playerId));
     }
 
+    /** 保留未接入确认界面时的安全入口，返回 UNAVAILABLE，不会隐式授予创建玩家数据的许可。 */
+    @SuppressWarnings("unused")
     public CompletionStage<Decision> requestCreation(UUID playerId) {
         return requestCreation(playerId, MissingPlayerDataConfirmation.UNAVAILABLE);
     }

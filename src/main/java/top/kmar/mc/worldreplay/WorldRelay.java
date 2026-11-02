@@ -17,7 +17,8 @@ public class WorldRelay {
 
     // 模组加载时首先执行此构造方法。
     // FML 会识别 IEventBus、ModContainer 等参数类型并自动传入对应实例。
-    public WorldRelay(IEventBus modEventBus, ModContainer modContainer) {
+    public WorldRelay(@SuppressWarnings("unused") IEventBus modEventBus,
+                      @SuppressWarnings("unused") ModContainer modContainer) {
     }
 
 }

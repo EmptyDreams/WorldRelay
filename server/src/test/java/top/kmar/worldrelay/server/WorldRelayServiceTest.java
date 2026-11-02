@@ -39,7 +39,10 @@ class WorldRelayServiceTest {
         return new ServerConfig("127.0.0.1", 0, 32, 0, 0, directory.resolve("users.json"), directory.resolve("worlds"));
     }
 
-    /** 验证中文用户名注册、重复注册拒绝、Basic 鉴权及重启后凭据有效，且文件和日志不泄露原密钥。 */
+    /**
+     * 验证中文用户名注册返回 API 密钥、Ed25519 公钥和 OpenSSH 私钥，重复注册返回冲突。
+     * API 密钥可用于 Basic 鉴权且重启后仍然有效；原密钥和 SSH 私钥不进入持久化文件或请求日志。
+     */
     @Test
     void registersAuthenticatesAndRetainsCredentialsAcrossRestartWithoutLoggingKeys() throws Exception {
         List<LogRecord> logs = new java.util.concurrent.CopyOnWriteArrayList<>();
@@ -59,7 +62,7 @@ class WorldRelayServiceTest {
         };
         Logger logger = Logger.getLogger("top.kmar.worldrelay.server.http.RequestDispatcher");
         logger.addHandler(capture);
-        String key;
+        String key, privateKey;
         try (HttpClient client = client()) {
             try (WorldRelayService service = new WorldRelayService(config())) {
                 service.start();
@@ -75,6 +78,11 @@ class WorldRelayServiceTest {
                 assertEquals("小明🌍", reader.nextString());
                 assertEquals("key", reader.nextName());
                 key = reader.nextString();
+                assertEquals("publicKey", reader.nextName());
+                assertTrue(reader.nextString().startsWith("ssh-ed25519 "));
+                assertEquals("privateKey", reader.nextName());
+                privateKey = reader.nextString();
+                assertTrue(privateKey.startsWith("-----BEGIN OPENSSH PRIVATE KEY-----\n"));
                 reader.endObject();
                 reader.finish();
                 assertTrue(key.matches("[A-Za-z0-9_-]{43}"));
@@ -94,6 +102,12 @@ class WorldRelayServiceTest {
                 + record.getThrown()).reduce("", String::concat);
             assertFalse(logged.contains(key));
             assertFalse(logged.contains(basic("小明🌍", key)));
+            assertFalse(logged.contains(privateKey));
+            try (var files = Files.walk(directory)) {
+                for (Path file : files.filter(Files::isRegularFile).toList()) {
+                    assertFalse(Files.readString(file).contains(privateKey));
+                }
+            }
         } finally {
             logger.removeHandler(capture);
         }
@@ -109,13 +123,17 @@ class WorldRelayServiceTest {
         }
     }
 
-    /** 验证 ping 经过生产鉴权链，成功时仅返回空响应，且不在注册端口提供。 */
+    /**
+     * 使用普通注册返回的 API 密钥验证 ping 的生产鉴权链：有效凭据返回空的 204，无效凭据统一返回 401。
+     * 同时验证响应禁止缓存、携带请求 ID，错误方法返回 405，注册端口不提供此业务接口。
+     */
     @Test
     void pingRequiresAuthenticationAndReturnsNoContent() throws Exception {
         String key;
         try (UserStore users = UserStore.open(config().usersFile())) {
-            key = users.register("ping-player");
-            assertNotNull(key);
+            var registration = users.register("ping-player", false);
+            assertNotNull(registration, "测试前置条件：ping 测试用户应注册成功");
+            key = registration.key();
         }
         try (WorldRelayService service = new WorldRelayService(config()); HttpClient client = client()) {
             service.start();
@@ -149,7 +167,10 @@ class WorldRelayServiceTest {
         }
     }
 
-    /** 验证同一用户名并发注册时恰好一次成功，其余返回冲突，且结果已持久化。 */
+    /**
+     * 验证 12 个同名普通注册请求并发执行时仅一个返回 201，其余 11 个返回 409，避免重复创建用户。
+     * 关闭并重新打开用户存储后，同名非覆盖注册仍被拒绝，确认成功的注册已经持久化。
+     */
     @Test
     void concurrentDuplicateRegistrationCreatesExactlyOneUser() throws Exception {
         try (WorldRelayService service = new WorldRelayService(config()); HttpClient client = client()) {
@@ -163,11 +184,14 @@ class WorldRelayServiceTest {
             assertEquals(11, statuses.stream().filter(status -> status == 409).count());
         }
         try (UserStore users = UserStore.open(config().usersFile())) {
-            assertNull(users.register("race"));
+            assertNull(users.register("race", false));
         }
     }
 
-    /** 验证业务端口被占用导致启动失败时关闭本机管理监听器、释放用户和世界存储锁，并禁止重启该实例。 */
+    /**
+     * 占用业务端口模拟启动失败，验证本机管理监听器被关闭，失败的服务实例不能再次启动或提供地址。
+     * 随后重新绑定管理端口、打开用户和世界存储并注册新用户，确认端口及用户、SSH 公钥、世界存储锁均已释放。
+     */
     @Test
     void startupFailureClosesRegistrationListenerAndReleasesStoreLock() throws Exception {
         InetAddress loopback = InetAddress.getByName("127.0.0.1");
@@ -189,13 +213,70 @@ class WorldRelayServiceTest {
             UserStore users = UserStore.open(config().usersFile());
             WorldStore worlds = WorldStore.open(config().worldsDirectory())
         ) {
-            assertNotNull(users.register("after-failure"));
+            assertNotNull(users.register("after-failure", false));
             assertTrue(worlds.list().isEmpty());
         }
     }
 
     private static HttpClient client() {
         return HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
+    }
+
+    /** 验证 HTTP 覆盖参数重置接口 Token 和 SSH 私钥；布尔参数可位于用户名之前，旧 Token 立即失效。 */
+    @Test
+    void overwritesUserOnlyWithExplicitBooleanFlag() throws Exception {
+        try (var service = new WorldRelayService(config()); var client = client()) {
+            service.start();
+            var original = send(client, register(service, "{\"username\":\"Dev\"}"));
+            assertEquals(201, original.statusCode());
+            String oldKey = field(original.body(), "key");
+            String oldPrivateKey = field(original.body(), "privateKey");
+            assertEquals(409, send(client, register(service, "{\"username\":\"Dev\",\"overwrite\":false}")).statusCode());
+            var reset = send(client, register(service, "{\"overwrite\":true,\"username\":\"Dev\"}"));
+            assertEquals(200, reset.statusCode());
+            assertEquals("no-store", reset.headers().firstValue("Cache-Control").orElseThrow());
+            String newKey = field(reset.body(), "key");
+            assertNotEquals(oldKey, newKey);
+            assertNotEquals(oldPrivateKey, field(reset.body(), "privateKey"));
+            assertEquals(401, send(client, api(service, "/api/v1/ping").header("Authorization", basic("Dev", oldKey)).GET().build()).statusCode());
+            assertEquals(204, send(client, api(service, "/api/v1/ping").header("Authorization", basic("Dev", newKey)).GET().build()).statusCode());
+        }
+    }
+
+    /** 验证注册接口保护同名普通 SSH 行，且严格拒绝字符串、数字、空值或重复字段形式的覆盖参数。 */
+    @Test
+    void rejectsUnmanagedSshCollisionAndMalformedOverwriteFlags() throws Exception {
+        Path keys = config().ssh().authorizedKeysFile();
+        Files.createDirectories(keys.getParent());
+        Files.writeString(keys, "ssh-ed25519 AAAA Dev\n");
+        try (var service = new WorldRelayService(config()); var client = client()) {
+            service.start();
+            var conflict = send(client, register(service, "{\"username\":\"Dev\",\"overwrite\":true}"));
+            assertEquals(409, conflict.statusCode());
+            assertTrue(conflict.body().contains("AUTHORIZED_KEYS_CONFLICT"));
+            assertEquals("ssh-ed25519 AAAA Dev\n", Files.readString(keys));
+            assertFalse(Files.exists(config().usersFile()));
+            for (String body : List.of("{\"username\":\"other\",\"overwrite\":\"true\"}",
+                "{\"username\":\"other\",\"overwrite\":1}", "{\"username\":\"other\",\"overwrite\":null}",
+                "{\"username\":\"other\",\"overwrite\":true,\"overwrite\":false}",
+                "{\"username\":\"other\",\"extra\":true}")) {
+                assertEquals(400, send(client, register(service, body)).statusCode());
+            }
+        }
+    }
+
+    private static String field(String json, String name) {
+        JsonReader reader = new JsonReader(json);
+        reader.beginObject();
+        String result = null;
+        while (reader.hasNext()) {
+            String field = reader.nextName();
+            String value = reader.nextString();
+            if (field.equals(name)) result = value;
+        }
+        reader.endObject();
+        reader.finish();
+        return java.util.Objects.requireNonNull(result);
     }
 
     private static HttpRequest register(WorldRelayService service, String body) {
