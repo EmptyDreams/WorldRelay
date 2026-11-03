@@ -8,11 +8,32 @@ import top.kmar.worldrelay.server.protocol.HostEndpoint;
 
 import java.time.Instant;
 import java.util.HashSet;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
-/** 世界名称、版本指针和所有权由同一份元数据原子发布。v1 只读兼容，写入一律使用 v2。 */
-record WorldMetadata(String worldId, String name, String createdAt, State state) {
+/** 取消凭据和所有权一同原子发布；无取消记录时仍使用 v2，保留 v1/v2 读取兼容。 */
+record WorldMetadata(String worldId, String name, String createdAt, State state, List<Cancellation> cancellations) {
+
+    WorldMetadata(String worldId, String name, String createdAt, State state) {
+        this(worldId, name, createdAt, state, List.of());
+    }
+
+    record Cancellation(Owner owner, long epoch, String cancelledAt) {
+        Cancellation {
+            Objects.requireNonNull(owner);
+            if (epoch < 1) throw new IllegalArgumentException("Invalid cancelled epoch");
+            // 只验证审计时间格式，存储保留调用方提供的原始字符串。
+            //noinspection ResultOfMethodCallIgnored
+            Instant.parse(cancelledAt);
+        }
+
+        boolean matches(WorldStore.Identity identity) {
+            return epoch == identity.epoch() && owner.username.equals(identity.username())
+                && owner.deviceId.equals(identity.deviceId()) && owner.sessionId.equals(identity.sessionId());
+        }
+    }
 
     record Owner(String username, String deviceId, String sessionId, String requestId) {
 
@@ -66,14 +87,22 @@ record WorldMetadata(String worldId, String name, String createdAt, State state)
         //noinspection ResultOfMethodCallIgnored
         Instant.parse(createdAt);
         Objects.requireNonNull(state);
+        cancellations = List.copyOf(cancellations);
+        long previous = 0;
+        for (Cancellation cancellation : cancellations) {
+            if (cancellation.epoch <= previous || cancellation.epoch >= state.epoch) {
+                throw new IllegalArgumentException("Invalid cancellation history");
+            }
+            previous = cancellation.epoch;
+        }
     }
 
     WorldMetadata withState(State next) {
-        return new WorldMetadata(worldId, name, createdAt, next);
+        return new WorldMetadata(worldId, name, createdAt, next, cancellations);
     }
 
     String toJson() {
-        JsonWriter writer = new JsonWriter().beginObject().name("formatVersion").value(2)
+        JsonWriter writer = new JsonWriter().beginObject().name("formatVersion").value(cancellations.isEmpty() ? 2 : 3)
             .name("worldId").value(worldId).name("name").value(name).name("createdAt").value(createdAt)
             .name("state").beginObject().name("epoch").value(state.epoch)
             .name("phase").value(state.phase.name()).name("owner");
@@ -93,15 +122,27 @@ record WorldMetadata(String worldId, String name, String createdAt, State state)
         writer.name("endpoint");
         if (state.endpoint == null) writer.nullValue();
         else state.endpoint.writeJson(writer);
-        return writer.endObject().endObject().finish();
+        writer.endObject();
+        if (!cancellations.isEmpty()) {
+            writer.name("cancellations").beginArray();
+            for (Cancellation cancellation : cancellations) {
+                Owner owner = cancellation.owner;
+                writer.beginObject().name("username").value(owner.username).name("deviceId").value(owner.deviceId)
+                    .name("sessionId").value(owner.sessionId).name("requestId").value(owner.requestId)
+                    .name("epoch").value(cancellation.epoch).name("cancelledAt").value(cancellation.cancelledAt).endObject();
+            }
+            writer.endArray();
+        }
+        return writer.endObject().finish();
     }
 
     static WorldMetadata parse(String json) {
-        JsonReader reader = new JsonReader(json, 4096, 4);
+        JsonReader reader = new JsonReader(json, WorldStore.MAX_METADATA_BYTES, 4);
         Set<String> fields = new HashSet<>();
         int format = 0;
         String id = null, name = null, createdAt = null;
         State state = null;
+        List<Cancellation> cancellations = new ArrayList<>();
         reader.beginObject();
         while (reader.hasNext()) {
             String field = reader.nextName();
@@ -112,6 +153,11 @@ record WorldMetadata(String worldId, String name, String createdAt, State state)
                 case "name" -> name = reader.nextString();
                 case "createdAt" -> createdAt = reader.nextString();
                 case "state" -> state = readState(reader);
+                case "cancellations" -> {
+                    reader.beginArray();
+                    while (reader.hasNext()) cancellations.add(readCancellation(reader));
+                    reader.endArray();
+                }
                 default -> throw new IllegalArgumentException("Unknown world metadata field");
             }
         }
@@ -122,8 +168,34 @@ record WorldMetadata(String worldId, String name, String createdAt, State state)
             state = State.free();
         } else if (format == 2) {
             requireFields(fields, Set.of("formatVersion", "worldId", "name", "createdAt", "state"));
+        } else if (format == 3) {
+            requireFields(fields, Set.of("formatVersion", "worldId", "name", "createdAt", "state", "cancellations"));
+            if (cancellations.isEmpty()) throw new IllegalArgumentException("Missing cancellation history");
         } else throw new IllegalArgumentException("Unsupported world metadata version");
-        return new WorldMetadata(id, name, createdAt, state);
+        return new WorldMetadata(id, name, createdAt, state, cancellations);
+    }
+
+    private static Cancellation readCancellation(JsonReader reader) {
+        Set<String> fields = new HashSet<>();
+        String username = null, device = null, session = null, request = null, at = null;
+        long epoch = 0;
+        reader.beginObject();
+        while (reader.hasNext()) {
+            String field = reader.nextName();
+            fields.add(field);
+            switch (field) {
+                case "username" -> username = reader.nextString();
+                case "deviceId" -> device = reader.nextString();
+                case "sessionId" -> session = reader.nextString();
+                case "requestId" -> request = reader.nextString();
+                case "epoch" -> epoch = reader.nextLong();
+                case "cancelledAt" -> at = reader.nextString();
+                default -> throw new IllegalArgumentException("Unknown cancellation field");
+            }
+        }
+        reader.endObject();
+        requireFields(fields, Set.of("username", "deviceId", "sessionId", "requestId", "epoch", "cancelledAt"));
+        return new Cancellation(new Owner(username, device, session, request), epoch, at);
     }
 
     private static State readState(JsonReader reader) {

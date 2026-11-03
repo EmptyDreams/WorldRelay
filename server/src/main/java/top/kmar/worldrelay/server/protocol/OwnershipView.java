@@ -11,7 +11,7 @@ public record OwnershipView(String worldId, long epoch, String sessionId, WorldP
     public void writeJson(JsonWriter writer) {
         writer.beginObject().name("worldId").value(worldId).name("epoch").value(epoch)
             .name("sessionId").value(sessionId).name("phase").value(phase.name()).name("status").value(status)
-            .name("baseVersion");
+            .name("hasSave").value(committedVersion != null).name("baseVersion");
         if (baseVersion == null) writer.nullValue();
         else writer.value(baseVersion);
         writer.name("committedVersion");

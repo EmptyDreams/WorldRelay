@@ -18,10 +18,10 @@ import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
 
-/** 四个固定业务路由共享有界 JSON 解析；只从鉴权上下文读取用户，不接受客户端指定持有者。 */
+/** 固定协调路由共享有界 JSON 解析；只从鉴权上下文读取用户，不接受客户端指定持有者。 */
 public final class WorldOwnershipHandler implements HttpHandler {
 
-    public enum Action {ACQUIRE, HEARTBEAT, READY, STOP}
+    public enum Action {ACQUIRE, HEARTBEAT, READY, STOP, CANCEL_CREATION}
 
     private static final int MAX_BODY_BYTES = 4096;
     private static final Set<String> IDENTITY_FIELDS = Set.of("worldId", "deviceId", "sessionId", "epoch");
@@ -61,12 +61,17 @@ public final class WorldOwnershipHandler implements HttpHandler {
                 status = result.acquired() ? 201 : 200;
             } else {
                 var identity = new WorldStore.Identity(username, command.deviceId, command.sessionId, command.epoch);
+                if (action == Action.CANCEL_CREATION) {
+                    worlds.cancelCreation(command.worldId, identity);
+                    HttpResponses.noContent(exchange, 204);
+                    return;
+                }
                 view = switch (action) {
                     case HEARTBEAT -> worlds.heartbeat(command.worldId, identity, command.playerCount);
                     case READY -> worlds.ready(command.worldId, identity, WorldStore.ReadyStage.valueOf(command.stage),
                         command.baseVersion, command.endpoint);
                     case STOP -> worlds.stop(command.worldId, identity, WorldStore.StopStage.valueOf(command.stage), command.baseVersion);
-                    case ACQUIRE -> throw new IllegalStateException("Already handled acquire");
+                    case ACQUIRE, CANCEL_CREATION -> throw new IllegalStateException("Already handled action");
                 };
             }
             JsonWriter writer = new JsonWriter();

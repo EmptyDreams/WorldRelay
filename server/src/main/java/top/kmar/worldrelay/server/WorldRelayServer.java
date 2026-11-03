@@ -60,7 +60,7 @@ public final class WorldRelayServer {
         });
         router.register("GET", "/api/v1/worlds", new WorldListHandler(worlds));
         for (WorldOwnershipHandler.Action action : WorldOwnershipHandler.Action.values()) {
-            router.register("POST", "/api/v1/worlds/" + action.name().toLowerCase(java.util.Locale.ROOT),
+            router.register("POST", "/api/v1/worlds/" + action.name().toLowerCase(java.util.Locale.ROOT).replace('_', '-'),
                 new WorldOwnershipHandler(worlds, action));
         }
         return router;

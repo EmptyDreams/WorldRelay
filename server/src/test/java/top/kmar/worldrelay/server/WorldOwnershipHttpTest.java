@@ -206,7 +206,7 @@ class WorldOwnershipHttpTest {
     void strictRequestValidationAndRoutesDoNotMutateOwnership() throws Exception {
         try (var client = HttpClient.newHttpClient(); var service = new WorldRelayService(config())) {
             service.start();
-            for (String action : List.of("acquire", "heartbeat", "ready", "stop")) {
+            for (String action : List.of("acquire", "heartbeat", "ready", "stop", "cancel-creation")) {
                 URI uri = uri(service.apiAddress().getPort(), "/api/v1/worlds/" + action);
                 error(send(client, HttpRequest.newBuilder(uri).POST(HttpRequest.BodyPublishers.ofString("{}")).build()), 401, "UNAUTHORIZED");
                 var wrongMethod = send(client, HttpRequest.newBuilder(uri).header("Authorization", auth).GET().build());
@@ -243,4 +243,27 @@ class WorldOwnershipHttpTest {
         }
     }
 
+    /** 真实鉴权路由返回明确存档状态；直接取消首建无需额外确认字段。 */
+    @Test
+    void firstCreationCanBeCancelledOverHttpAndStartedCreationCannot() throws Exception {
+        try (var client = HttpClient.newHttpClient(); var service = new WorldRelayService(config())) {
+            service.start();
+            var acquired = send(client, post(service, "acquire", acquireFields(world, device, request), auth));
+            assertTrue(acquired.body().contains("\"hasSave\":false"));
+            String identity = identity(world, device, field(acquired.body(), "sessionId"));
+            error(send(client, post(service, "cancel-creation", identity, guestAuth)), 403, "OWNER_MISMATCH");
+            var cancelled = send(client, post(service, "cancel-creation", identity, auth));
+            assertEquals(204, cancelled.statusCode());
+            assertTrue(cancelled.body().isEmpty());
+            assertEquals(204, send(client, post(service, "cancel-creation", identity, auth)).statusCode());
+            error(send(client, post(service, "acquire", acquireFields(world, device, request), auth)), 409, "ACQUISITION_CANCELLED");
+            var next = send(client, post(service, "acquire", acquireFields(world, device, id()), auth));
+            assertTrue(next.body().contains("\"epoch\":3"));
+            String nextIdentity = identity(world, device, field(next.body(), "sessionId")).replace("\"epoch\":1", "\"epoch\":3");
+            assertEquals(200, send(client, post(service, "ready", nextIdentity + ",\"stage\":\"SAVE_SYNCED\",\"baseVersion\":null", auth)).statusCode());
+            error(send(client, post(service, "cancel-creation", nextIdentity, auth)), 409, "INVALID_PHASE");
+            assertEquals(204, send(client, post(service, "cancel-creation", identity, auth)).statusCode());
+            assertTrue(list(client, service).contains("STARTING"));
+        }
+    }
 }

@@ -89,13 +89,14 @@ class RrsyncCapabilitiesTest {
     @Test
     void cachesCapabilityForRegistrationsAndRechecksAfterRestart() throws Exception {
         Path program = script("printf '%s\\n' \"$*\" >> \"$0.calls\"\nprintf '%s\\n' 'rrsync [-munge] DIR'\n");
+        Path callsFile = Path.of(program + ".calls");
         Path file = directory.resolve("users.json");
         var ssh = new SshRegistrationConfig(directory.resolve("authorized_keys"), directory.resolve("transfers"), program.toString());
         try (var users = UserStore.open(file, ssh)) {
             users.register("Dev", false);
             users.register("Alice", false);
             assertTrue(Files.readString(ssh.authorizedKeysFile()).contains(" -munge "));
-            assertEquals(List.of("-help"), Files.readAllLines(Path.of(program + ".calls")));
+            assertEquals(List.of("-help"), Files.readAllLines(callsFile));
         }
         script("printf '%s\\n' \"$*\" >> \"$0.calls\"\nprintf '%s\\n' 'rrsync [-ro|-wo] DIR'\n");
         try (var users = UserStore.open(file, ssh)) {
@@ -103,7 +104,7 @@ class RrsyncCapabilitiesTest {
             String dev = Files.readString(ssh.authorizedKeysFile()).lines().filter(line -> line.endsWith(" Dev")).findFirst().orElseThrow();
             assertFalse(dev.contains(" -munge "));
             assertTrue(dev.startsWith("restrict,command=\""));
-            assertEquals(List.of("-help", "-help"), Files.readAllLines(Path.of(program + ".calls")));
+            assertEquals(List.of("-help", "-help"), Files.readAllLines(callsFile));
         }
     }
 

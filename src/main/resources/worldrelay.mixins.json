@@ -6,6 +6,9 @@
     "PlayerDataStorageMixin",
     "PlayerListMixin"
   ],
+  "client": [
+    "CreateWorldScreenMixin"
+  ],
   "injectors": {
     "defaultRequire": 1
   },

@@ -21,7 +21,8 @@ import java.util.function.Supplier;
 /** 唯一的元数据写入入口；退出、超时和上传完成声明均不会释放所有权。 */
 public final class WorldStore implements AutoCloseable {
 
-    private static final int MAX_METADATA_BYTES = 4096;
+    // 保留取消审计和获取请求墓碑；达到上限时拒绝取消，不丢弃历史或释放所有权。
+    static final int MAX_METADATA_BYTES = 1024 * 1024;
     private final Path root;
     private final FileChannel lockChannel;
     private final FileLock fileLock;
@@ -180,6 +181,12 @@ public final class WorldStore implements AutoCloseable {
         validateId(requestId);
         Entry entry = entry(worldId);
         var state = entry.metadata.state();
+        for (var cancelled : entry.metadata.cancellations()) {
+            var owner = cancelled.owner();
+            if (owner.username().equals(username) && owner.deviceId().equals(deviceId) && owner.requestId().equals(requestId)) {
+                throw conflict("ACQUISITION_CANCELLED", "Acquisition was cancelled");
+            }
+        }
         if (state.owner() != null) {
             var owner = state.owner();
             if (owner.username().equals(username) && owner.deviceId().equals(deviceId) && owner.requestId().equals(requestId)) {
@@ -201,6 +208,27 @@ public final class WorldStore implements AutoCloseable {
         touch(entry);
         if (players != null) entry.players = players;
         return view(entry);
+    }
+
+    /** 仅取消尚未开始生成的首次创建；与 ready 共用同步边界。 */
+    public synchronized void cancelCreation(String worldId, Identity identity) throws IOException, WorldAccessException {
+        Entry entry = entry(worldId);
+        for (var cancellation : entry.metadata.cancellations()) {
+            if (cancellation.matches(identity)) return; // 不影响后来取得的所有权。
+        }
+        entry = owned(worldId, identity);
+        var state = entry.metadata.state();
+        if (state.phase() != WorldPhase.PREPARING || state.committedVersion() != null) {
+            throw conflict("INVALID_PHASE", "Only an unstarted new world can be cancelled");
+        }
+        if (state.epoch() == Long.MAX_VALUE) throw conflict("EPOCH_EXHAUSTED", "World epoch is exhausted");
+        var history = new ArrayList<>(entry.metadata.cancellations());
+        history.add(new WorldMetadata.Cancellation(state.owner(), state.epoch(), Instant.now().toString()));
+        var free = new WorldMetadata.State(state.epoch() + 1, WorldPhase.FREE, null, null, null, null, null);
+        persist(entry, new WorldMetadata(entry.metadata.worldId(), entry.metadata.name(), entry.metadata.createdAt(), free, history));
+        entry.seen = false;
+        entry.joinReady = false;
+        entry.players = null;
     }
 
     public synchronized OwnershipView ready(
@@ -331,7 +359,10 @@ public final class WorldStore implements AutoCloseable {
     }
 
     private void persist(Entry entry, WorldMetadata.State state) throws IOException {
-        WorldMetadata next = entry.metadata.withState(state);
+        persist(entry, entry.metadata.withState(state));
+    }
+
+    private void persist(Entry entry, WorldMetadata next) throws IOException {
         Path directory = root.resolve(next.worldId());
         Path target = directory.resolve("world.json");
         try {

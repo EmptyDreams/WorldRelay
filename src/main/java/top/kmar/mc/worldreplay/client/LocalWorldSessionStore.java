@@ -1,0 +1,148 @@
+package top.kmar.mc.worldreplay.client;
+
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
+import java.util.UUID;
+
+/** 普通单人 saves 之外的会话与工作副本；所有方法仅在串行 IO 队列调用。 */
+final class LocalWorldSessionStore {
+    private static Path lockedGame;
+    private static FileChannel gameLockChannel;
+    private static FileLock gameLock;
+    private final Path root;
+    private final String world;
+
+    static synchronized void lockGame(Path game) throws IOException {
+        Path directory = game.toAbsolutePath().normalize().resolve("worldrelay");
+        if (directory.equals(lockedGame)) {
+            if (gameLockChannel == null || !gameLockChannel.isOpen() || gameLock == null || !gameLock.isValid()) {
+                throw new IOException("Client recovery lock is no longer valid");
+            }
+            return;
+        }
+        if (lockedGame != null) throw new IOException("Another game directory is active");
+        createDirectories(directory);
+        FileChannel channel = FileChannel.open(directory.resolve(".client.lock"), StandardOpenOption.CREATE,
+            StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
+        try {
+            FileLock lock = channel.tryLock();
+            if (lock == null) throw new IOException("Another client is using the recovery records");
+            gameLockChannel = channel;
+            gameLock = lock;
+            lockedGame = directory;
+        } catch (IOException | OverlappingFileLockException failure) {
+            channel.close();
+            throw new IOException("Cannot lock client recovery records");
+        }
+    }
+
+    LocalWorldSessionStore(Path game, String server, String player, UUID profile, String world) throws IOException {
+        if (!UUID.fromString(world).toString().equals(world)) throw new IOException("Invalid world ID");
+        this.world = world;
+        String scope;
+        try {
+            scope = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest((server + "\n" + player + "\n" + profile).getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException impossible) { throw new AssertionError(impossible); }
+        this.root = game.toAbsolutePath().normalize().resolve("worldrelay").resolve(scope).resolve(world);
+        createDirectories(root);
+    }
+
+    Path saves(long epoch) throws IOException {
+        if (epoch < 1) throw new IOException("Invalid epoch");
+        Path path = root.resolve("work").resolve(Long.toString(epoch)).resolve("saves");
+        createDirectories(path);
+        return path;
+    }
+
+    LocalWorldSession read() throws IOException {
+        Path file = root.resolve("session.json");
+        if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS)) return null;
+        try {
+            JsonObject json = JsonParser.parseString(readBounded(file)).getAsJsonObject();
+            if (json.get("formatVersion").getAsInt() != 1) throw new IllegalArgumentException();
+            LocalWorldSession value = new Gson().fromJson(json.get("session"), LocalWorldSession.class);
+            if (!world.equals(value.worldId())) throw new IllegalArgumentException();
+            return value;
+        } catch (RuntimeException failure) { throw new IOException("Cannot read local recovery record"); }
+    }
+
+    void write(LocalWorldSession session) throws IOException {
+        if (!world.equals(session.worldId())) throw new IOException("Wrong recovery record");
+        JsonObject json = new JsonObject();
+        json.addProperty("formatVersion", 1);
+        json.add("session", new Gson().toJsonTree(session));
+        atomicWrite(root.resolve("session.json"), json.toString());
+    }
+
+    static String device(Path game) throws IOException {
+        Path directory = game.toAbsolutePath().normalize().resolve("worldrelay");
+        createDirectories(directory);
+        Path file = directory.resolve("device.json");
+        if (Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
+            try {
+                String id = ClientJson.requiredString(JsonParser.parseString(readBounded(file)).getAsJsonObject(), "deviceId");
+                if (!UUID.fromString(id).toString().equals(id)) throw new IllegalArgumentException();
+                return id;
+            } catch (RuntimeException failure) { throw new IOException("Cannot read device identity"); }
+        }
+        String id = UUID.randomUUID().toString();
+        JsonObject json = new JsonObject();
+        json.addProperty("deviceId", id);
+        atomicWrite(file, json.toString());
+        return id;
+    }
+
+    static void createDirectories(Path path) throws IOException {
+        if (path == null) throw new IOException("Managed directory path is required");
+        // 先验证已存在的祖先，避免先通过链接写入目录再报错。
+        for (Path part = path; part != null; part = part.getParent()) {
+            if (Files.exists(part, LinkOption.NOFOLLOW_LINKS) && (Files.isSymbolicLink(part)
+                || !Files.isDirectory(part, LinkOption.NOFOLLOW_LINKS) || !part.toRealPath().equals(part))) {
+                throw new IOException("Managed path must not contain links");
+            }
+        }
+        Files.createDirectories(path);
+    }
+
+    private static String readBounded(Path file) throws IOException {
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Recovery file is not regular");
+        try (var input = Files.newInputStream(file, LinkOption.NOFOLLOW_LINKS)) {
+            byte[] bytes = input.readNBytes(16385);
+            if (bytes.length > 16384) throw new IOException("Recovery record exceeds limit");
+            return new String(bytes, StandardCharsets.UTF_8);
+        }
+    }
+
+    static void atomicWrite(Path target, String value) throws IOException {
+        createDirectories(target.getParent());
+        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS) && !Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Recovery target is not regular");
+        }
+        Path temporary = Files.createTempFile(target.getParent(), ".session-", ".tmp");
+        try {
+            try (var channel = FileChannel.open(temporary, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+                ByteBuffer bytes = StandardCharsets.UTF_8.encode(value);
+                while (bytes.hasRemaining()) {
+                    // 写入量由缓冲区位置推进记录，循环继续处理部分写入。
+                    //noinspection ResultOfMethodCallIgnored
+                    channel.write(bytes);
+                }
+                channel.force(true);
+            }
+            Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } finally { Files.deleteIfExists(temporary); }
+    }
+}

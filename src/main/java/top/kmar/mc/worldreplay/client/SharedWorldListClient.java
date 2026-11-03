@@ -49,9 +49,9 @@ final class SharedWorldListClient {
             var ids = new HashSet<String>();
             for (var element : root.getAsJsonArray("worlds")) {
                 var world = element.getAsJsonObject();
-                String id = requiredString(world, "worldId");
-                String name = requiredString(world, "name");
-                String status = requiredString(world, "status");
+                String id = ClientJson.requiredString(world, "worldId");
+                String name = ClientJson.requiredString(world, "name");
+                String status = ClientJson.requiredString(world, "status");
                 if (!ids.add(id) || !STATUSES.contains(status)) {
                     throw new IllegalArgumentException();
                 }
@@ -62,21 +62,13 @@ final class SharedWorldListClient {
                 if (players != null && players < 0) {
                     throw new IllegalArgumentException();
                 }
-                result.add(new Summary(id, name, status, host.isJsonNull() ? null : requiredString(world, "hostName"),
-                    players, lastCommittedAt.isJsonNull() ? null : requiredString(world, "lastCommittedAt")));
+                result.add(new Summary(id, name, status, host.isJsonNull() ? null : ClientJson.requiredString(world, "hostName"),
+                    players, lastCommittedAt.isJsonNull() ? null : ClientJson.requiredString(world, "lastCommittedAt")));
             }
             return List.copyOf(result);
         } catch (RuntimeException e) {
             throw new IOException("Invalid world list response");
         }
-    }
-
-    private static String requiredString(JsonObject object, String key) {
-        var value = object.getAsJsonPrimitive(key);
-        if (!value.isString() || value.getAsString().isBlank()) {
-            throw new IllegalArgumentException();
-        }
-        return value.getAsString();
     }
 
     record Summary(String worldId, String name, String status, String hostName, Integer playerCount,

@@ -27,7 +27,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
-/** 左侧世界列表与操作、右侧世界详情；行内加入入口尚未接入实际托管或连接流程。 */
+/** 共享世界列表；首次创建经协调服务取得所有权后进入原版创建流程。 */
 public final class SharedWorldScreen extends Screen {
 
     private static final String TRANSLATION_PREFIX = "worldrelay.shared_worlds.";
@@ -248,14 +248,14 @@ public final class SharedWorldScreen extends Screen {
     /** 只控制页面展示和按钮可用性，不能据此获取或释放世界所有权。 */
     private enum WorldStatus {
         FREE("free", true, 0xFF80D080),
-        PREPARING("preparing", false, 0xFFFFD080),
-        STARTING("starting", false, 0xFFFFD080),
+        PREPARING("preparing", true, 0xFFFFD080),
+        STARTING("starting", true, 0xFFFFD080),
         RUNNING("running", true, 0xFF80D080),
         STOPPING("stopping", false, 0xFFFFD080),
         // 等待提交时选择加入只能进入等待流程，不能接管世界。
         COMMITTING("committing", true, 0xFFFFD080),
-        RECOVERY_REQUIRED("recovery_required", false, 0xFFFFAA00),
-        OWNED_OFFLINE("recovery_required", false, 0xFFFFAA00);
+        RECOVERY_REQUIRED("recovery_required", true, 0xFFFFAA00),
+        OWNED_OFFLINE("recovery_required", true, 0xFFFFAA00);
 
         private final String key;
         private final boolean joinAllowed;
@@ -374,7 +374,7 @@ public final class SharedWorldScreen extends Screen {
                 }
                 WorldList.this.setSelected(this);
                 Minecraft.getInstance().getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.0F));
-                // 当前仅处理选择和点击反馈，实际托管和连接流程尚未接入。
+                SharedWorldCreation.join(SharedWorldScreen.this, world.worldId(), world.name().getString(), world.status().name());
             }
 
             @Override
