@@ -315,7 +315,7 @@ public final class SharedWorldCreation {
                         Minecraft.getInstance().setScreen(parent);
                     });
                 } catch (Exception failure) {
-                    WorldRelay.LOGGER.warn("Shared world upload did not complete; snapshot, ownership and retry identity are retained");
+                    WorldRelay.LOGGER.warn("Shared world upload did not complete; snapshot, ownership and retry identity are retained", failure);
                     Minecraft.getInstance().execute(() -> {
                         busy = false;
                         finishMessage = "upload_failed";

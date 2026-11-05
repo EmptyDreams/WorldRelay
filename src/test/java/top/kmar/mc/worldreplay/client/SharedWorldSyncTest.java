@@ -1,6 +1,7 @@
 package top.kmar.mc.worldreplay.client;
 
 import com.sun.net.httpserver.HttpServer;
+import net.minecraft.util.DirectoryLock;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import top.kmar.mc.worldreplay.sync.RsyncMode;
@@ -27,7 +28,7 @@ class SharedWorldSyncTest {
             UUID.randomUUID().toString(), 2, LocalWorldSession.Stage.STOPPED, "world", 7L, null, null);
     }
 
-    /** 验证只有已停服的世界能生成固定上传快照，重试复用原快照和上传标识。 */
+    /** 验证已停服世界在持有目录保护锁时能生成固定上传快照，重试复用原快照和上传标识。 */
     @Test
     void onlyStoppedWorldsCanProduceFixedRetryableUploadSnapshots() throws Exception {
         var session = stopped();
@@ -37,9 +38,13 @@ class SharedWorldSyncTest {
         Path world = Files.createDirectory(store.saves(2).resolve("world"));
         Files.writeString(world.resolve("level.dat"), "first-save");
         Files.writeString(world.resolve("session.lock"), "local-lock");
+        Files.writeString(Files.createDirectory(world.resolve("mod-data")).resolve("session.lock"), "mod-owned-data");
         assertThrows(IOException.class, () -> SharedWorldSync.prepareUpload(session.with(LocalWorldSession.Stage.STARTED, "world"), store, "a".repeat(64)));
         assertThrows(IOException.class, () -> SharedWorldSync.prepareUpload(session.with(LocalWorldSession.Stage.STOPPING, "world"), store, "a".repeat(64)));
-        var uploading = SharedWorldSync.prepareUpload(session, store, "a".repeat(64));
+        LocalWorldSession uploading;
+        try (DirectoryLock ignored = DirectoryLock.create(world)) {
+            uploading = SharedWorldSync.prepareUpload(session, store, "a".repeat(64));
+        }
         store.write(uploading);
         assertEquals(uploading, store.read());
         assertEquals(7L, uploading.baseVersion());
@@ -49,6 +54,7 @@ class SharedWorldSyncTest {
         var manifest = SnapshotManifest.read(store.transfer(2, "upload").resolve("manifest.bin"), uploading.manifestHash());
         SnapshotFiles.verify(store.transfer(2, "upload").resolve("world"), manifest);
         assertEquals("first-save", Files.readString(store.transfer(2, "upload").resolve("world/level.dat")));
+        assertEquals("mod-owned-data", Files.readString(store.transfer(2, "upload").resolve("world/mod-data/session.lock")));
         assertEquals("later-work-copy", Files.readString(world.resolve("level.dat")));
     }
 

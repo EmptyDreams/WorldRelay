@@ -66,8 +66,7 @@ final class SharedWorldSync {
         if (Files.notExists(world, LinkOption.NOFOLLOW_LINKS)) {
             Path temporary = Files.createTempDirectory(payload.getParent(), ".upload-");
             Path copy = temporary.resolve("world");
-            SnapshotFiles.copyIsolated(store.saves(session.epoch()).resolve(session.folder()), copy, false);
-            Files.deleteIfExists(copy.resolve("session.lock"));
+            SnapshotFiles.copyWorld(store.saves(session.epoch()).resolve(session.folder()), copy);
             Files.move(copy, world, StandardCopyOption.ATOMIC_MOVE);
             Files.delete(temporary);
         }

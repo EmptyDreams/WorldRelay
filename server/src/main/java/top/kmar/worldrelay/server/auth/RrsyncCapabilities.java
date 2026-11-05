@@ -10,7 +10,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.regex.Pattern;
 
-/** 启动时探测 rrsync 的可选参数；探测失败只省略 -munge，不阻止服务启动。 */
+/** 启动时探测 rrsync 的可选参数；探测失败记录警告，授权省略 -munge 后继续提供传输。 */
 final class RrsyncCapabilities {
 
     private static final System.Logger LOGGER = System.getLogger(RrsyncCapabilities.class.getName());
@@ -68,7 +68,7 @@ final class RrsyncCapabilities {
         if (supported) {
             LOGGER.log(System.Logger.Level.INFO, "rrsync supports -munge; enabling it for SSH authorizations");
         } else {
-            LOGGER.log(System.Logger.Level.INFO, "rrsync -munge unavailable ({0}); SSH authorizations will omit it", reason);
+            LOGGER.log(System.Logger.Level.WARNING, "rrsync -munge unavailable ({0}); continuing SSH transfers without it", reason);
         }
         return supported;
     }

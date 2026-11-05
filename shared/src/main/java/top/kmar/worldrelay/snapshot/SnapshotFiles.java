@@ -78,23 +78,34 @@ public final class SnapshotFiles {
      * Linux 使用目录句柄遍历，防止验证后父目录被替换为符号链接。
      */
     public static void copyIsolated(Path source, Path target, boolean requireSecureTraversal) throws IOException {
+        copyIsolated(source, target, requireSecureTraversal, false);
+    }
+
+    /** 复制停服后的完整世界；根目录的 Minecraft 进程锁不能被读取或传给下一任房主。 */
+    @SuppressWarnings("unused") // 由客户端调用；共享源码在 server 模块中也会独立编译。
+    public static void copyWorld(Path source, Path target) throws IOException {
+        copyIsolated(source, target, false, true);
+    }
+
+    private static void copyIsolated(Path source, Path target, boolean requireSecureTraversal, boolean skipSessionLock) throws IOException {
         requireDirectory(source);
         Files.createDirectory(target);
         long[] quota = {0, 0};
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(source)) {
             if (stream instanceof SecureDirectoryStream<Path> secure) {
-                secureCopy(secure, target, quota);
+                secureCopy(secure, target, quota, skipSessionLock);
             } else {
                 if (requireSecureTraversal) throw new IOException("Secure directory traversal is unavailable");
-                ordinaryCopy(source, target, quota);
+                ordinaryCopy(source, target, quota, skipSessionLock);
             }
         }
         forceDirectory(target);
     }
 
-    private static void secureCopy(SecureDirectoryStream<Path> source, Path target, long[] quota) throws IOException {
+    private static void secureCopy(SecureDirectoryStream<Path> source, Path target, long[] quota, boolean skipSessionLock) throws IOException {
         for (Path item : source) {
             Path name = item.getFileName();
+            if (skipSessionLock && name.toString().equals("session.lock")) continue;
             safeName(name);
             BasicFileAttributes attributes = source.getFileAttributeView(name, BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS).readAttributes();
             count(attributes, quota);
@@ -102,7 +113,7 @@ public final class SnapshotFiles {
             if (attributes.isDirectory()) {
                 Files.createDirectory(destination);
                 try (SecureDirectoryStream<Path> child = source.newDirectoryStream(name, LinkOption.NOFOLLOW_LINKS)) {
-                    secureCopy(child, destination, quota);
+                    secureCopy(child, destination, quota, false);
                 }
                 forceDirectory(destination);
             } else {
@@ -114,16 +125,17 @@ public final class SnapshotFiles {
         }
     }
 
-    private static void ordinaryCopy(Path source, Path target, long[] quota) throws IOException {
+    private static void ordinaryCopy(Path source, Path target, long[] quota, boolean skipSessionLock) throws IOException {
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(source)) {
             for (Path item : stream) {
+                if (skipSessionLock && item.getFileName().toString().equals("session.lock")) continue;
                 safeName(item.getFileName());
                 BasicFileAttributes attributes = Files.readAttributes(item, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
                 count(attributes, quota);
                 Path destination = target.resolve(item.getFileName().toString());
                 if (attributes.isDirectory()) {
                     Files.createDirectory(destination);
-                    ordinaryCopy(item, destination, quota);
+                    ordinaryCopy(item, destination, quota, false);
                     forceDirectory(destination);
                 } else {
                     if (!attributes.isRegularFile()) throw new IOException("Nonregular transfer file");
