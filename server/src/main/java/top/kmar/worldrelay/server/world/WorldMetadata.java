@@ -7,20 +7,38 @@ import top.kmar.worldrelay.server.json.JsonWriter;
 import top.kmar.worldrelay.server.protocol.HostEndpoint;
 
 import java.time.Instant;
-import java.util.HashSet;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
 
-/** 取消凭据和所有权一同原子发布；无取消记录时仍使用 v2，保留 v1/v2 读取兼容。 */
-record WorldMetadata(String worldId, String name, String createdAt, State state, List<Cancellation> cancellations) {
+/** 取消审计、提交回执和所有权一同原子发布，保留 v1/v2/v3 读取兼容。 */
+record WorldMetadata(String worldId, String name, String createdAt, State state, List<Cancellation> cancellations, List<Commit> commits) {
+
+    WorldMetadata(String worldId, String name, String createdAt, State state, List<Cancellation> cancellations) {
+        this(worldId, name, createdAt, state, cancellations, List.of());
+    }
 
     WorldMetadata(String worldId, String name, String createdAt, State state) {
         this(worldId, name, createdAt, state, List.of());
     }
 
+    record Commit(String uploadId, Owner owner, long epoch, Long baseVersion, long version, String manifestHash) {
+
+        Commit {
+            WorldStore.validateId(uploadId);
+            Objects.requireNonNull(owner);
+            if (epoch < 1 || version < 1 || (baseVersion != null && baseVersion < 1)
+                || version != (baseVersion == null ? 1 : Math.addExact(baseVersion, 1))
+                || !manifestHash.matches("[0-9a-f]{64}")) throw new IllegalArgumentException("Invalid commit receipt");
+        }
+
+        boolean matches(WorldStore.Identity identity) {
+            return epoch == identity.epoch() && owner.username.equals(identity.username())
+                && owner.deviceId.equals(identity.deviceId()) && owner.sessionId.equals(identity.sessionId());
+        }
+
+    }
+
     record Cancellation(Owner owner, long epoch, String cancelledAt) {
+
         Cancellation {
             Objects.requireNonNull(owner);
             if (epoch < 1) throw new IllegalArgumentException("Invalid cancelled epoch");
@@ -33,6 +51,7 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
             return epoch == identity.epoch() && owner.username.equals(identity.username())
                 && owner.deviceId.equals(identity.deviceId()) && owner.sessionId.equals(identity.sessionId());
         }
+
     }
 
     record Owner(String username, String deviceId, String sessionId, String requestId) {
@@ -88,6 +107,7 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
         Instant.parse(createdAt);
         Objects.requireNonNull(state);
         cancellations = List.copyOf(cancellations);
+        commits = List.copyOf(commits);
         long previous = 0;
         for (Cancellation cancellation : cancellations) {
             if (cancellation.epoch <= previous || cancellation.epoch >= state.epoch) {
@@ -95,14 +115,19 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
             }
             previous = cancellation.epoch;
         }
+        long version = 0;
+        for (Commit commit : commits) {
+            if (commit.version != ++version || commit.epoch > state.epoch) throw new IllegalArgumentException("Invalid commit history");
+        }
+        if (!commits.isEmpty() && !Objects.equals(state.committedVersion, version)) throw new IllegalArgumentException("Commit history mismatch");
     }
 
     WorldMetadata withState(State next) {
-        return new WorldMetadata(worldId, name, createdAt, next, cancellations);
+        return new WorldMetadata(worldId, name, createdAt, next, cancellations, commits);
     }
 
     String toJson() {
-        JsonWriter writer = new JsonWriter().beginObject().name("formatVersion").value(cancellations.isEmpty() ? 2 : 3)
+        JsonWriter writer = new JsonWriter().beginObject().name("formatVersion").value(!commits.isEmpty() ? 4 : cancellations.isEmpty() ? 2 : 3)
             .name("worldId").value(worldId).name("name").value(name).name("createdAt").value(createdAt)
             .name("state").beginObject().name("epoch").value(state.epoch)
             .name("phase").value(state.phase.name()).name("owner");
@@ -123,7 +148,7 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
         if (state.endpoint == null) writer.nullValue();
         else state.endpoint.writeJson(writer);
         writer.endObject();
-        if (!cancellations.isEmpty()) {
+        if (!cancellations.isEmpty() || !commits.isEmpty()) {
             writer.name("cancellations").beginArray();
             for (Cancellation cancellation : cancellations) {
                 Owner owner = cancellation.owner;
@@ -133,16 +158,31 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
             }
             writer.endArray();
         }
+        if (!commits.isEmpty()) {
+            writer.name("commits").beginArray();
+            for (Commit commit : commits) {
+                Owner owner = commit.owner;
+                writer.beginObject().name("uploadId").value(commit.uploadId).name("owner").beginObject()
+                    .name("username").value(owner.username).name("deviceId").value(owner.deviceId)
+                    .name("sessionId").value(owner.sessionId).name("requestId").value(owner.requestId).endObject()
+                    .name("epoch").value(commit.epoch).name("baseVersion");
+                if (commit.baseVersion == null) writer.nullValue();
+                else writer.value(commit.baseVersion);
+                writer.name("version").value(commit.version).name("manifestHash").value(commit.manifestHash).endObject();
+            }
+            writer.endArray();
+        }
         return writer.endObject().finish();
     }
 
     static WorldMetadata parse(String json) {
-        JsonReader reader = new JsonReader(json, WorldStore.MAX_METADATA_BYTES, 4);
+        JsonReader reader = new JsonReader(json, WorldStore.MAX_METADATA_BYTES, 5);
         Set<String> fields = new HashSet<>();
         int format = 0;
         String id = null, name = null, createdAt = null;
         State state = null;
         List<Cancellation> cancellations = new ArrayList<>();
+        List<Commit> commits = new ArrayList<>();
         reader.beginObject();
         while (reader.hasNext()) {
             String field = reader.nextName();
@@ -155,7 +195,16 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
                 case "state" -> state = readState(reader);
                 case "cancellations" -> {
                     reader.beginArray();
-                    while (reader.hasNext()) cancellations.add(readCancellation(reader));
+                    while (reader.hasNext()) {
+                        cancellations.add(readCancellation(reader));
+                    }
+                    reader.endArray();
+                }
+                case "commits" -> {
+                    reader.beginArray();
+                    while (reader.hasNext()) {
+                        commits.add(readCommit(reader));
+                    }
                     reader.endArray();
                 }
                 default -> throw new IllegalArgumentException("Unknown world metadata field");
@@ -171,8 +220,36 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
         } else if (format == 3) {
             requireFields(fields, Set.of("formatVersion", "worldId", "name", "createdAt", "state", "cancellations"));
             if (cancellations.isEmpty()) throw new IllegalArgumentException("Missing cancellation history");
+        } else if (format == 4) {
+            requireFields(fields, Set.of("formatVersion", "worldId", "name", "createdAt", "state", "cancellations", "commits"));
+            if (commits.isEmpty()) throw new IllegalArgumentException("Missing commit history");
         } else throw new IllegalArgumentException("Unsupported world metadata version");
-        return new WorldMetadata(id, name, createdAt, state, cancellations);
+        return new WorldMetadata(id, name, createdAt, state, cancellations, commits);
+    }
+
+    private static Commit readCommit(JsonReader reader) {
+        Set<String> fields = new HashSet<>();
+        String id = null, hash = null;
+        Owner owner = null;
+        long epoch = 0, version = 0;
+        Long base = null;
+        reader.beginObject();
+        while (reader.hasNext()) {
+            String field = reader.nextName();
+            fields.add(field);
+            switch (field) {
+                case "uploadId" -> id = reader.nextString();
+                case "owner" -> owner = readOwner(reader);
+                case "epoch" -> epoch = reader.nextLong();
+                case "baseVersion" -> base = nullableLong(reader);
+                case "version" -> version = reader.nextLong();
+                case "manifestHash" -> hash = reader.nextString();
+                default -> throw new IllegalArgumentException("Unknown commit field");
+            }
+        }
+        reader.endObject();
+        requireFields(fields, Set.of("uploadId", "owner", "epoch", "baseVersion", "version", "manifestHash"));
+        return new Commit(id, owner, epoch, base, version, hash);
     }
 
     private static Cancellation readCancellation(JsonReader reader) {

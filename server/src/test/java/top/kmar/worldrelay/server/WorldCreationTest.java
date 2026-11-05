@@ -141,7 +141,7 @@ class WorldCreationTest {
         try (UserStore users = UserStore.open(config().usersFile())) {
             var registration = users.register("玩家", false);
             assertNotNull(registration, "测试前置条件：世界列表查询用户应注册成功");
-            String key = registration.key();
+            String key = registration.token();
             return "Basic " + Base64.getEncoder().encodeToString(("玩家:" + key).getBytes(StandardCharsets.UTF_8));
         }
     }

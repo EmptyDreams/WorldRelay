@@ -19,7 +19,7 @@ import java.util.Base64;
 import java.util.HexFormat;
 import java.util.UUID;
 
-/** 两文件注册事务：先持久化备份和恢复标记，最后删除标记才算提交；私钥不进入此层。 */
+/** 注册备份与恢复标记；v2 只修改用户文件，兼容恢复旧版 v1 用户和公钥两文件事务。 */
 final class RegistrationFiles implements AutoCloseable {
 
     final Path users;
@@ -33,7 +33,9 @@ final class RegistrationFiles implements AutoCloseable {
 
     @FunctionalInterface
     interface Publisher {
+
         void publish(Path temporary, Path target) throws IOException;
+
     }
 
     private RegistrationFiles(Path users, Path keys, FileChannel channel, FileLock lock, Publisher publisher) {
@@ -110,14 +112,22 @@ final class RegistrationFiles implements AutoCloseable {
         return !healthy;
     }
 
+    /** 传输授权只改公钥文件，用同一文件锁及原子写入，避免与注册互相覆盖。 */
+    void replaceKeys(byte[] expected, byte[] updated) throws IOException {
+        if (!healthy) throw new IOException("SSH authorization requires recovery");
+        requireEqual(read(keys), expected);
+        write(keys, updated, true);
+    }
+
     void commit(String username, boolean overwritten, byte[] beforeUsers, byte[] afterUsers, byte[] beforeKeys, byte[] afterKeys)
         throws IOException {
         if (!healthy) throw new IOException("User registration requires recovery");
+        boolean keysChanged = !Arrays.equals(beforeKeys, afterKeys);
         requireEqual(read(users), beforeUsers);
-        requireEqual(read(keys), beforeKeys);
+        if (keysChanged) requireEqual(read(keys), beforeKeys);
         Files.createDirectories(backups);
         if (!Files.isDirectory(backups, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Registration backups must be a real directory");
-        JsonWriter writer = new JsonWriter().beginObject().name("version").value(1)
+        JsonWriter writer = new JsonWriter().beginObject().name("version").value(keysChanged ? 1 : 2)
             .name("username").value(username).name("overwritten").value(overwritten)
             .name("authorizedKeysFile").value(keys.toString());
         snapshot(writer, "usersBefore", beforeUsers);
@@ -130,8 +140,8 @@ final class RegistrationFiles implements AutoCloseable {
         byte[] marker = (id + " " + hash(backup) + "\n").getBytes(StandardCharsets.UTF_8);
         write(pending, marker, false);
         try {
-            // 先撤销旧 SSH 密钥；新私钥在整个事务提交前不会发给调用方。
-            write(keys, afterKeys, true);
+            // 新注册仅发布用户文件，既有 SSH 授权连原子替换都不做。
+            if (keysChanged) write(keys, afterKeys, true);
             write(users, afterUsers, true);
             Files.delete(pending);
             syncDirectory(pending.getParent());
@@ -165,11 +175,14 @@ final class RegistrationFiles implements AutoCloseable {
         byte[] backup = read(backups.resolve(id + ".json"));
         if (backup == null || !hash(backup).equals(marker.substring(37, 101))) throw new IOException("Registration backup checksum mismatch");
         byte[] beforeUsers, afterUsers, beforeKeys, afterKeys;
+        boolean usersOnly;
         try {
             JsonReader reader = new JsonReader(utf8(backup), Integer.MAX_VALUE, 4);
             reader.beginObject();
             name(reader, "version");
-            if (reader.nextInt() != 1) throw new IllegalArgumentException();
+            int version = reader.nextInt();
+            if (version != 1 && version != 2) throw new IllegalArgumentException();
+            usersOnly = version == 2;
             name(reader, "username");
             UserStore.validateUsername(reader.nextString());
             name(reader, "overwritten");
@@ -182,17 +195,17 @@ final class RegistrationFiles implements AutoCloseable {
             afterKeys = snapshot(reader, "keysAfter");
             reader.endObject();
             reader.finish();
-            if (afterUsers == null || afterKeys == null) throw new IllegalArgumentException();
+            if (afterUsers == null || (usersOnly ? !Arrays.equals(beforeKeys, afterKeys) : afterKeys == null)) throw new IllegalArgumentException();
         } catch (IllegalArgumentException failure) {
             throw new IOException("Invalid registration backup");
         }
-        byte[] currentUsers = read(users), currentKeys = read(keys);
-        // 两个文件均须属于已知事务状态；发现外部修改时停止，不能盲目覆盖管理员的修改。
-        if (!known(currentUsers, beforeUsers, afterUsers) || !known(currentKeys, beforeKeys, afterKeys)) {
+        byte[] currentUsers = read(users), currentKeys = usersOnly ? null : read(keys);
+        // 只恢复本事务实际修改的文件；未知状态不能覆盖，v2 不回滚管理员独立修改的 SSH 文件。
+        if (!known(currentUsers, beforeUsers, afterUsers) || (!usersOnly && !known(currentKeys, beforeKeys, afterKeys))) {
             throw new IOException("Registration files changed outside the pending transaction");
         }
         if (!Arrays.equals(currentUsers, beforeUsers)) write(users, beforeUsers, false);
-        if (!Arrays.equals(currentKeys, beforeKeys)) write(keys, beforeKeys, false);
+        if (!usersOnly && !Arrays.equals(currentKeys, beforeKeys)) write(keys, beforeKeys, false);
         Files.delete(pending);
         syncDirectory(pending.getParent());
     }

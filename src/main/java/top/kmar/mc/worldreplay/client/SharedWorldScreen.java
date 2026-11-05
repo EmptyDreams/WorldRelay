@@ -251,7 +251,7 @@ public final class SharedWorldScreen extends Screen {
         PREPARING("preparing", true, 0xFFFFD080),
         STARTING("starting", true, 0xFFFFD080),
         RUNNING("running", true, 0xFF80D080),
-        STOPPING("stopping", false, 0xFFFFD080),
+        STOPPING("stopping", true, 0xFFFFD080),
         // 等待提交时选择加入只能进入等待流程，不能接管世界。
         COMMITTING("committing", true, 0xFFFFD080),
         RECOVERY_REQUIRED("recovery_required", true, 0xFFFFAA00),

@@ -156,7 +156,7 @@ class WorldCreationCancellationTest {
         }
     }
 
-    /** 多次取消记录超过旧版 4 KiB 后仍能恢复，历史旧请求仍不能重新获取。 */
+    /** 验证多次取消创建后，重启仍会拒绝已取消的请求，新的获取请求使用递增任期。 */
     @Test
     void cancellationHistorySurvivesMultipleCreations() throws Exception {
         String world;

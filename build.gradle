@@ -41,6 +41,9 @@ base {
 // Mojang ships Java 21 to end users in 1.21.1, so mods should target Java 21.
 java.toolchain.languageVersion = JavaLanguageVersion.of(21)
 
+// 两端仅共享不依赖 Minecraft 的快照格式与文件校验代码。
+sourceSets.main.java.srcDir('shared/src/main/java')
+
 neoForge {
     // Specify the version of NeoForge to use.
     version = project.neo_version
@@ -154,6 +157,11 @@ dependencies {
 
 tasks.named('test', Test).configure {
     useJUnitPlatform()
+    if (providers.environmentVariable('WORLDRELAY_SYNC_TEST_API_PORT').isPresent()) {
+        // 外部服务的状态不属于 Gradle 输入；显式启用端到端测试时必须实际运行。
+        outputs.upToDateWhen { false }
+        outputs.doNotCacheIf('Uses an external rsync integration service') { true }
+    }
 }
 
 // This block of code expands all declared replace properties in the specified resource targets.

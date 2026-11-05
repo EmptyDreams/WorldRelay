@@ -11,11 +11,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.logging.Handler;
-import java.util.logging.LogRecord;
-import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -36,34 +31,11 @@ class RrsyncCapabilitiesTest {
         assertTrue(RrsyncCapabilities.supportsMunge(program.toString()));
     }
 
-    /** 验证旧版帮助只输出一条省略参数的日志，且 -munge-links 之类的其他选项不能被误判为支持。 */
+    /** 验证名称相似的 -munge-links 选项不会被误判为安全链接隔离能力。 */
     @Test
-    void unsupportedOptionIsOmittedWithOneLogMessage() throws Exception {
+    void doesNotAcceptSimilarMungeOptionNames() throws Exception {
         Path program = script("printf '%s\\n' 'usage: rrsync [-ro|-wo] [-munge-links] DIR'\n");
-        List<LogRecord> messages = new ArrayList<>();
-        Handler capture = new Handler() {
-            @Override
-            public void publish(LogRecord record) {
-                messages.add(record);
-            }
-
-            @Override
-            public void flush() {
-            }
-
-            @Override
-            public void close() {
-            }
-        };
-        Logger logger = Logger.getLogger(RrsyncCapabilities.class.getName());
-        logger.addHandler(capture);
-        try {
-            assertFalse(RrsyncCapabilities.supportsMunge(program.toString()));
-            assertEquals(1, messages.size());
-            assertTrue(messages.getFirst().getMessage().contains("omit"));
-        } finally {
-            logger.removeHandler(capture);
-        }
+        assertFalse(RrsyncCapabilities.supportsMunge(program.toString()));
     }
 
     /** 验证程序缺失和帮助命令非零退出均可回退，不会因错误文本中出现 -munge 而启用参数或抛错。 */
@@ -83,29 +55,6 @@ class RrsyncCapabilitiesTest {
         ProcessHandle process = ProcessHandle.of(pid).orElse(null);
         if (process != null) process.onExit().get(2, java.util.concurrent.TimeUnit.SECONDS);
         assertTrue(ProcessHandle.of(pid).map(handle -> !handle.isAlive()).orElse(true));
-    }
-
-    /** 验证每次启动只探测一次，后续注册复用能力；重启后能力变化会应用到覆盖注册的公钥行。 */
-    @Test
-    void cachesCapabilityForRegistrationsAndRechecksAfterRestart() throws Exception {
-        Path program = script("printf '%s\\n' \"$*\" >> \"$0.calls\"\nprintf '%s\\n' 'rrsync [-munge] DIR'\n");
-        Path callsFile = Path.of(program + ".calls");
-        Path file = directory.resolve("users.json");
-        var ssh = new SshRegistrationConfig(directory.resolve("authorized_keys"), directory.resolve("transfers"), program.toString());
-        try (var users = UserStore.open(file, ssh)) {
-            users.register("Dev", false);
-            users.register("Alice", false);
-            assertTrue(Files.readString(ssh.authorizedKeysFile()).contains(" -munge "));
-            assertEquals(List.of("-help"), Files.readAllLines(callsFile));
-        }
-        script("printf '%s\\n' \"$*\" >> \"$0.calls\"\nprintf '%s\\n' 'rrsync [-ro|-wo] DIR'\n");
-        try (var users = UserStore.open(file, ssh)) {
-            users.register("Dev", true);
-            String dev = Files.readString(ssh.authorizedKeysFile()).lines().filter(line -> line.endsWith(" Dev")).findFirst().orElseThrow();
-            assertFalse(dev.contains(" -munge "));
-            assertTrue(dev.startsWith("restrict,command=\""));
-            assertEquals(List.of("-help", "-help"), Files.readAllLines(callsFile));
-        }
     }
 
     private Path script(String body) throws IOException {

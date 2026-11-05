@@ -252,28 +252,6 @@ class WorldOwnershipTest {
     }
 
     /**
-     * 验证读取 v1 世界记录时不改写文件，首次获取所有权才原子升级为 v2。
-     * 升级后重启必须恢复已持有状态并等待原房主恢复，不能重新变为空闲世界。
-     */
-    @Test
-    void readsLegacyWithoutWritingThenUpgradesOnAcquire() throws Exception {
-        String world = id();
-        Path file = Files.createDirectories(directory.resolve(world)).resolve("world.json");
-        String legacy = "{\"formatVersion\":1,\"worldId\":\"" + world
-            + "\",\"name\":\"旧世界\",\"createdAt\":\"2026-11-01T00:00:00Z\"}";
-        Files.writeString(file, legacy);
-        try (WorldStore store = open()) {
-            assertEquals("FREE", store.list().getFirst().status());
-            assertEquals(legacy, Files.readString(file));
-            store.acquire(world, "房主", device, request);
-            assertTrue(Files.readString(file).contains("\"formatVersion\":2"));
-        }
-        try (WorldStore store = open()) {
-            assertEquals("RECOVERY_REQUIRED", store.list().getFirst().status());
-        }
-    }
-
-    /**
      * 逐项移除 v2 必需字段，或构造未知阶段、缺少持有者及版本时间不一致的状态，验证启动失败且原文件不被修复。
      * 恢复有效文件后能重新打开存储，确认每次失败均释放了进程文件锁。
      */

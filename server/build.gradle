@@ -13,6 +13,8 @@ java {
     toolchain.languageVersion = JavaLanguageVersion.of(21)
 }
 
+sourceSets.main.java.srcDir('../shared/src/main/java')
+
 application {
     applicationName = 'worldrelay-server'
     mainClass = 'top.kmar.worldrelay.server.WorldRelayServer'

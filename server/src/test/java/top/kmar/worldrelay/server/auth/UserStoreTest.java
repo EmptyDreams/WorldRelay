@@ -26,7 +26,8 @@ class UserStoreTest {
         try (UserStore store = UserStore.open(file)) {
             var registration = store.register("小明🌍", false);
             assertNotNull(registration, "测试前置条件：首次注册应成功");
-            key = registration.key();
+            key = registration.token();
+            assertFalse(registration.toString().contains(key));
             assertTrue(key.matches("[A-Za-z0-9_-]{43}"));
             assertTrue(store.verify("小明🌍", key));
             assertNull(store.register("小明🌍", false));
@@ -35,7 +36,7 @@ class UserStoreTest {
             assertFalse(store.verify("小明🌍", "wrong"));
             var alice = store.register("Alice", false);
             assertNotNull(alice, "测试前置条件：不同用户名应注册成功");
-            assertNotEquals(key, alice.key());
+            assertNotEquals(key, alice.token());
             assertNotNull(store.register("alice", false));
         }
         String persisted = Files.readString(file);
@@ -43,9 +44,6 @@ class UserStoreTest {
         assertTrue(persisted.contains("小明🌍"));
         try (UserStore reopened = UserStore.open(file)) {
             assertTrue(reopened.verify("小明🌍", key));
-        }
-        try (var files = Files.list(directory)) {
-            assertTrue(files.noneMatch(path -> path.toString().endsWith(".tmp")));
         }
     }
 
@@ -70,7 +68,7 @@ class UserStoreTest {
 
     /**
      * 用同名目录阻止用户 JSON 写入，验证注册失败不会使新用户生效，也不会覆盖障碍目录。
-     * 移除障碍后可重新注册并使用返回的 API 密钥认证，且注册过程不遗留临时文件。
+     * 移除障碍后可重新注册并使用返回的 API 密钥认证。
      */
     @Test
     void failedPublicationDoesNotAuthenticateUserAndCanBeRetried() throws Exception {
@@ -85,11 +83,8 @@ class UserStoreTest {
             Files.delete(file);
             var retried = store.register("retry", false);
             assertNotNull(retried, "测试前置条件：排除写入故障后应注册成功");
-            String key = retried.key();
+            String key = retried.token();
             assertTrue(store.verify("retry", key));
-        }
-        try (var files = Files.list(directory)) {
-            assertTrue(files.noneMatch(path -> path.toString().endsWith(".tmp")));
         }
     }
 

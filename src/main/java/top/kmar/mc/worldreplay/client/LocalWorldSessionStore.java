@@ -18,6 +18,7 @@ import java.util.UUID;
 
 /** 普通单人 saves 之外的会话与工作副本；所有方法仅在串行 IO 队列调用。 */
 final class LocalWorldSessionStore {
+
     private static Path lockedGame;
     private static FileChannel gameLockChannel;
     private static FileLock gameLock;
@@ -55,7 +56,9 @@ final class LocalWorldSessionStore {
         try {
             scope = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                 .digest((server + "\n" + player + "\n" + profile).getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException impossible) { throw new AssertionError(impossible); }
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new AssertionError(impossible);
+        }
         this.root = game.toAbsolutePath().normalize().resolve("worldrelay").resolve(scope).resolve(world);
         createDirectories(root);
     }
@@ -67,6 +70,46 @@ final class LocalWorldSessionStore {
         return path;
     }
 
+    Path transfer(long epoch, String direction) throws IOException {
+        if (epoch < 1 || (!direction.equals("upload") && !direction.equals("download"))) throw new IOException("Invalid transfer path");
+        Path path = root.resolve("work").resolve(Long.toString(epoch)).resolve(direction);
+        createDirectories(path);
+        return path;
+    }
+
+    Path temporary() throws IOException {
+        Path path = root.resolve("tmp");
+        createDirectories(path);
+        return path;
+    }
+
+    record Cache(Path payload, String hash) {
+
+    }
+
+    Cache cache() throws IOException {
+        Path file = root.resolve("cache.json");
+        if (Files.notExists(file, LinkOption.NOFOLLOW_LINKS)) return null;
+        try {
+            JsonObject json = JsonParser.parseString(readBounded(file)).getAsJsonObject();
+            long epoch = json.get("epoch").getAsBigDecimal().longValueExact();
+            String direction = ClientJson.requiredString(json, "direction");
+            String hash = ClientJson.requiredString(json, "hash");
+            if (!hash.matches("[0-9a-f]{64}")) throw new IllegalArgumentException();
+            return new Cache(transfer(epoch, direction), hash);
+        } catch (RuntimeException failure) {
+            throw new IOException("Invalid local snapshot cache");
+        }
+    }
+
+    void cache(LocalWorldSession session, String direction, String hash) throws IOException {
+        JsonObject json = new JsonObject();
+        json.addProperty("epoch", session.epoch());
+        json.addProperty("direction", direction);
+        json.addProperty("hash", hash);
+        atomicWrite(root.resolve("cache.json"), json.toString());
+    }
+
     LocalWorldSession read() throws IOException {
         Path file = root.resolve("session.json");
         if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS)) return null;
@@ -76,7 +119,9 @@ final class LocalWorldSessionStore {
             LocalWorldSession value = new Gson().fromJson(json.get("session"), LocalWorldSession.class);
             if (!world.equals(value.worldId())) throw new IllegalArgumentException();
             return value;
-        } catch (RuntimeException failure) { throw new IOException("Cannot read local recovery record"); }
+        } catch (RuntimeException failure) {
+            throw new IOException("Cannot read local recovery record");
+        }
     }
 
     void write(LocalWorldSession session) throws IOException {
@@ -96,7 +141,9 @@ final class LocalWorldSessionStore {
                 String id = ClientJson.requiredString(JsonParser.parseString(readBounded(file)).getAsJsonObject(), "deviceId");
                 if (!UUID.fromString(id).toString().equals(id)) throw new IllegalArgumentException();
                 return id;
-            } catch (RuntimeException failure) { throw new IOException("Cannot read device identity"); }
+            } catch (RuntimeException failure) {
+                throw new IOException("Cannot read device identity");
+            }
         }
         String id = UUID.randomUUID().toString();
         JsonObject json = new JsonObject();
@@ -143,6 +190,9 @@ final class LocalWorldSessionStore {
                 channel.force(true);
             }
             Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } finally { Files.deleteIfExists(temporary); }
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
     }
+
 }

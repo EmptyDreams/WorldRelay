@@ -8,14 +8,17 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
-import java.util.Base64;
-import java.util.HexFormat;
-import java.util.Map;
-import java.util.TreeMap;
+import java.time.Instant;
+import java.util.*;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /** 用户名及高熵密钥摘要的持久存储；进程文件锁和实例锁共同串行化修改。 */
 public final class UserStore implements AutoCloseable {
@@ -29,15 +32,20 @@ public final class UserStore implements AutoCloseable {
     private final SecureRandom random = new SecureRandom();
     private final Map<String, byte[]> users = new TreeMap<>();
     private byte[] usersImage;
+    private final Map<String, Instant> transferKeyExpiry = new HashMap<>();
+    private ScheduledExecutorService keyExpiryWorker;
     private boolean closed;
 
-    private UserStore(Path file, FileChannel lockChannel, FileLock fileLock, RegistrationFiles files, SshRegistrationConfig ssh) {
+    private UserStore(
+        Path file, FileChannel lockChannel, FileLock fileLock, RegistrationFiles files, SshRegistrationConfig ssh,
+        java.util.function.Predicate<String> capabilities
+    ) {
         this.file = file;
         this.lockChannel = lockChannel;
         this.fileLock = fileLock;
         this.files = files;
         this.ssh = ssh;
-        this.mungeSupported = RrsyncCapabilities.supportsMunge(ssh.rrsyncCommand());
+        this.mungeSupported = capabilities.test(ssh.rrsyncCommand());
     }
 
     public static UserStore open(Path path) throws IOException {
@@ -49,6 +57,13 @@ public final class UserStore implements AutoCloseable {
     }
 
     static UserStore open(Path path, SshRegistrationConfig ssh, RegistrationFiles.Publisher publisher) throws IOException {
+        return open(path, ssh, publisher, RrsyncCapabilities::supportsMunge);
+    }
+
+    static UserStore open(
+        Path path, SshRegistrationConfig ssh, RegistrationFiles.Publisher publisher,
+        java.util.function.Predicate<String> capabilities
+    ) throws IOException {
         Path file = RegistrationFiles.canonicalFile(path);
         FileChannel channel = FileChannel.open(file.resolveSibling(file.getFileName() + ".lock"),
             StandardOpenOption.CREATE, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
@@ -64,8 +79,10 @@ public final class UserStore implements AutoCloseable {
                 throw new IOException("User store is already in use");
             }
             files = RegistrationFiles.open(file, ssh.authorizedKeysFile(), publisher);
-            UserStore store = new UserStore(file, channel, lock, files, ssh);
+            UserStore store = new UserStore(file, channel, lock, files, ssh, capabilities);
             store.load();
+            store.clearTransferKeys(); // 重启后不再信任上个进程签发的临时传输凭据。
+            store.hardenRegisteredKeys();
             return store;
         } catch (IOException | RuntimeException | Error failure) {
             if (files != null) {
@@ -84,7 +101,7 @@ public final class UserStore implements AutoCloseable {
         }
     }
 
-    /** 返回凭据一次；未明确覆盖时重复用户名返回 null。私钥只存在于返回值中。 */
+    /** 只返回本次生成的 API Token；注册不生成 SSH 密钥、改写授权或创建传输目录。 */
     public synchronized Registration register(String username, boolean overwrite) throws IOException {
         ensureOpen();
         if (files.isNotHealthy()) throw new IOException("User registration requires recovery");
@@ -94,12 +111,6 @@ public final class UserStore implements AutoCloseable {
             return null;
         }
         byte[] beforeKeys = RegistrationFiles.read(files.keys);
-        String originalKeys = beforeKeys == null ? "" : RegistrationFiles.utf8(beforeKeys);
-        // 先检查同名条目，冲突时不生成、替换或返回任何新凭据。
-        Path root = ssh.transferDirectory().toAbsolutePath().normalize();
-        Path directory = root.resolve(HexFormat.of().formatHex(digest(username)));
-        AuthorizedKeys.update(originalKeys, username, "ssh-ed25519 placeholder " + username, ssh.rrsyncCommand(), directory, mungeSupported);
-        SshKeyPair pair = SshKeyPair.generate(username, random);
         byte[] entropy = new byte[32];
         random.nextBytes(entropy);
         String key = Base64.getUrlEncoder().withoutPadding().encodeToString(entropy);
@@ -107,17 +118,10 @@ public final class UserStore implements AutoCloseable {
         Map<String, byte[]> updated = new TreeMap<>(users);
         updated.put(username, hash);
         byte[] afterUsers = serialize(updated);
-        Files.createDirectories(root);
-        root = root.toRealPath();
-        directory = root.resolve(directory.getFileName());
-        Files.createDirectories(directory);
-        if (!Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS)) throw new IOException("User transfer directory must be a real directory");
-        // 目录可能通过其父目录符号链接改变真实路径，授权命令始终使用最终确认的隔离目录。
-        String updatedKeys = AuthorizedKeys.update(originalKeys, username, pair.publicKey(), ssh.rrsyncCommand(), directory, mungeSupported);
-        files.commit(username, existing, usersImage, afterUsers, beforeKeys, updatedKeys.getBytes(StandardCharsets.UTF_8));
+        files.commit(username, existing, usersImage, afterUsers, beforeKeys, beforeKeys);
         users.put(username, hash);
         usersImage = afterUsers;
-        return new Registration(username, key, pair.publicKey(), pair.privateKey(), existing);
+        return new Registration(username, key, existing);
     }
 
     public synchronized boolean verify(String username, String key) {
@@ -128,6 +132,105 @@ public final class UserStore implements AutoCloseable {
         // 未知用户名也计算摘要并进行定长比较；不向调用方区分失败原因。
         boolean matches = MessageDigest.isEqual(expected == null ? new byte[32] : expected, actual);
         return expected != null && matches;
+    }
+
+    /** HTTP 已验证持有者后签发目录专用的短期密钥，不授予权威目录访问权。 */
+    public synchronized String issueTransferKey(String username, String transferId, Path directory, boolean readOnly) throws IOException {
+        ensureOpen();
+        if (!users.containsKey(username)) throw new IOException("Unknown transfer user");
+        if (!java.util.UUID.fromString(transferId).toString().equals(transferId)) throw new IllegalArgumentException("Invalid transfer ID");
+        Path sessions = ssh.transferDirectory().toAbsolutePath().normalize().resolve(".sessions");
+        Path canonical = directory.toRealPath();
+        if (!canonical.startsWith(sessions) || !canonical.equals(directory.toAbsolutePath().normalize())) {
+            throw new IOException("Invalid SSH transfer root");
+        }
+        String comment = "worldrelay-transfer:" + transferId; // ':' 不能出现在注册用户名中。
+        SshKeyPair pair = SshKeyPair.generate(comment, random);
+        byte[] before = RegistrationFiles.read(files.keys);
+        String original = before == null ? "" : RegistrationFiles.utf8(before);
+        String retained = removeTransferKey(original, comment);
+        if (retained.lines().filter(line -> line.contains(" worldrelay-transfer:")).count() >= 1024) {
+            throw new IOException("Too many SSH transfer authorizations");
+        }
+        String command = shellQuote(ssh.rrsyncCommand()) + (readOnly ? " -ro " : " -wo ")
+            + (mungeSupported ? "-munge " : "") + shellQuote(canonical.toString());
+        Instant expires = Instant.now().plusSeconds(6 * 60 * 60);
+        // OpenSSH 7.6 没有 expiry-time；强制命令在 Java 停服期间也必须拒绝过期密钥。
+        String checked = "worldrelay_now=$(/bin/date +%s) || exit 1; [ \"$worldrelay_now\" -lt " + expires.getEpochSecond()
+            + " ] || exit 1; exec " + command;
+        command = "/bin/sh -c " + shellQuote(checked);
+        String line = "restrict,command=\""
+            // OpenSSH 的 authorized_keys 只反转义双引号，不能将普通反斜杠加倍。
+            + command.replace("\"", "\\\"") + "\" " + pair.publicKey() + "\n";
+        if (line.getBytes(StandardCharsets.UTF_8).length > 8192) throw new IOException("SSH transfer authorization is too long");
+        files.replaceKeys(before, (retained + (retained.isEmpty() || retained.endsWith("\n") ? "" : "\n") + line).getBytes(StandardCharsets.UTF_8));
+        transferKeyExpiry.put(transferId, expires);
+        if (keyExpiryWorker == null) {
+            keyExpiryWorker = Executors.newSingleThreadScheduledExecutor(task -> {
+                Thread thread = new Thread(task, "worldrelay-transfer-key-expiry");
+                thread.setDaemon(true);
+                return thread;
+            });
+            keyExpiryWorker.scheduleWithFixedDelay(() -> {
+                try {
+                    expireTransferKeys(Instant.now());
+                } catch (IOException failure) {
+                    System.getLogger(getClass().getName()).log(System.Logger.Level.WARNING, "Expired transfer authorization cleanup failed");
+                }
+            }, 15, 15, TimeUnit.SECONDS);
+        }
+        return pair.privateKey();
+    }
+
+    public synchronized void revokeTransferKey(String transferId) throws IOException {
+        ensureOpen();
+        if (!java.util.UUID.fromString(transferId).toString().equals(transferId)) throw new IllegalArgumentException("Invalid transfer ID");
+        byte[] before = RegistrationFiles.read(files.keys);
+        if (before == null) return;
+        String original = RegistrationFiles.utf8(before);
+        String updated = removeTransferKey(original, "worldrelay-transfer:" + transferId);
+        if (!original.equals(updated)) files.replaceKeys(before, updated.getBytes(StandardCharsets.UTF_8));
+        transferKeyExpiry.remove(transferId);
+    }
+
+    synchronized void expireTransferKeys(Instant now) throws IOException {
+        if (closed) return;
+        for (String id : java.util.List.copyOf(transferKeyExpiry.keySet())) {
+            if (!now.isBefore(transferKeyExpiry.get(id))) revokeTransferKey(id);
+        }
+    }
+
+    private void clearTransferKeys() throws IOException {
+        byte[] before = RegistrationFiles.read(files.keys);
+        if (before == null) return;
+        String original = RegistrationFiles.utf8(before);
+        StringBuilder retained = new StringBuilder();
+        for (String line : original.split("(?<=\\n)", -1)) {
+            if (!line.stripTrailing().matches(".* worldrelay-transfer:[0-9a-f-]{36}")) retained.append(line);
+        }
+        if (!original.contentEquals(retained)) files.replaceKeys(before, retained.toString().getBytes(StandardCharsets.UTF_8));
+        transferKeyExpiry.clear();
+    }
+
+    private void hardenRegisteredKeys() throws IOException {
+        if (!mungeSupported || users.isEmpty()) return;
+        byte[] before = RegistrationFiles.read(files.keys);
+        if (before == null) return;
+        String original = RegistrationFiles.utf8(before);
+        String hardened = AuthorizedKeys.harden(original, users.keySet(), ssh.rrsyncCommand());
+        if (!original.equals(hardened)) files.replaceKeys(before, hardened.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String removeTransferKey(String original, String comment) {
+        StringBuilder retained = new StringBuilder();
+        for (String line : original.split("(?<=\\n)", -1)) {
+            if (!line.stripTrailing().endsWith(" " + comment)) retained.append(line);
+        }
+        return retained.toString();
+    }
+
+    private static String shellQuote(String value) {
+        return "'" + value.replace("'", "'\\''") + "'";
     }
 
     public static void validateUsername(String username) {
@@ -189,8 +292,13 @@ public final class UserStore implements AutoCloseable {
             return;
         }
         closed = true;
+        if (keyExpiryWorker != null) keyExpiryWorker.shutdownNow();
         try {
-            files.close();
+            try {
+                clearTransferKeys();
+            } finally {
+                files.close();
+            }
         } finally {
             try {
                 fileLock.release();
@@ -200,18 +308,14 @@ public final class UserStore implements AutoCloseable {
         }
     }
 
-    public record Registration(String username, String key, String publicKey, String privateKey, boolean overwritten) {
+    public record Registration(String username, String token, boolean overwritten) {
+
         @Override
         @SuppressWarnings("NullableProblems")
         public String toString() {
-            return "Registration[username=" + username + ", key=<redacted>, privateKey=<redacted>, overwritten=" + overwritten + "]";
+            return "Registration[username=" + username + ", token=<redacted>, overwritten=" + overwritten + "]";
         }
-    }
 
-    public static final class AuthorizationConflictException extends IOException {
-        AuthorizationConflictException() {
-            super("Username has an unmanaged or ambiguous authorized_keys entry");
-        }
     }
 
 }

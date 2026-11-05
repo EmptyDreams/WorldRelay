@@ -51,8 +51,8 @@ class WorldOwnershipHttpTest {
             var guest = users.register("访客", false);
             assertNotNull(host, "测试前置条件：房主应注册成功");
             assertNotNull(guest, "测试前置条件：访客应注册成功");
-            auth = basic("房主", host.key());
-            guestAuth = basic("访客", guest.key());
+            auth = basic("房主", host.token());
+            guestAuth = basic("访客", guest.token());
         }
         try (WorldStore worlds = WorldStore.open(config().worldsDirectory())) {
             var first = worlds.create("联机世界");

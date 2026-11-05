@@ -1,50 +1,43 @@
 package top.kmar.worldrelay.server.auth;
 
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
-/** 仅根据完整行尾注释识别用户；只替换一个可确认的 rrsync 条目，保留其他行的原始文本和换行。 */
+/** 根据完整行尾注释识别受管 rrsync 授权，加固命令并保留原有公钥与限制。 */
 final class AuthorizedKeys {
 
     private static final Set<String> RRSYNC_FLAGS = Set.of("-ro", "-wo", "-munge", "-absolute", "-no-del", "-no-lock", "-no-overwrite");
+    private static final Pattern COMMAND_OPTION = Pattern.compile("(?i)(^|,)command=\"(?:[^\"\\\\]|\\\\.)*\"");
 
     private AuthorizedKeys() {
     }
 
-    static String update(String original, String username, String publicKey, String rrsyncCommand, Path directory, boolean munge)
-        throws IOException {
-        String command = shellQuote(rrsyncCommand) + (munge ? " -munge " : " ")
-            + shellQuote(directory.toString().replace('\\', '/'));
-        String replacement = "restrict,command=\"" + command.replace("\\", "\\\\").replace("\"", "\\\"") + "\" " + publicKey;
-        if (replacement.getBytes(StandardCharsets.UTF_8).length > 8192) throw new IOException("SSH authorization line is too long");
+    /** 更新已登记用户的受管 rrsync 命令，保留原公钥和管理员附加的 from 等限制。 */
+    static String harden(String original, Set<String> usernames, String executable) {
         String[] lines = original.split("(?<=\n)", -1);
-        int matched = -1;
         for (int index = 0; index < lines.length; index++) {
             Entry entry = parse(lines[index]);
-            if (entry == null) {
-                String line = lines[index].strip();
-                if (!line.startsWith("#") && (line.endsWith(" " + username) || line.endsWith("\t" + username))) {
-                    throw new UserStore.AuthorizationConflictException();
-                }
-                continue;
-            }
-            if (!entry.comment.equals(username)) continue;
-            if (matched != -1 || !isRrsync(entry.options, rrsyncCommand)) {
-                throw new UserStore.AuthorizationConflictException();
-            }
-            matched = index;
+            if (entry == null || !usernames.contains(entry.comment) || isNotRrsync(entry.options, executable)) continue;
+            Matcher command = COMMAND_OPTION.matcher(entry.options);
+            if (!command.find()) continue;
+            String option = command.group();
+            String decoded = option.substring(option.indexOf('"') + 1, option.length() - 1).replace("\\\"", "\"");
+            List<String> words = shellWords(decoded);
+            if (words == null) continue;
+            if (words.getFirst().equals("exec")) words = words.subList(1, words.size());
+            List<String> flags = new ArrayList<>(words.subList(1, words.size() - 1));
+            if (!flags.contains("-munge")) flags.add("-munge");
+            // 保留原目录及 -ro/-wo/-no-del 等限制，不能因加固而扩大已有公钥权限。
+            String forced = shellQuote(executable) + " " + String.join(" ", flags) + " " + shellQuote(words.getLast());
+            String updated = command.replaceFirst(Matcher.quoteReplacement(command.group(1) + "command=\"" + forced.replace("\"", "\\\"") + "\""));
+            String tail = lines[index].strip().substring(entry.options.length()).stripLeading();
+            String ending = lines[index].endsWith("\r\n") ? "\r\n" : lines[index].endsWith("\n") ? "\n" : "";
+            lines[index] = updated + " " + tail + ending;
         }
-        if (matched >= 0) {
-            String ending = lines[matched].endsWith("\r\n") ? "\r\n" : lines[matched].endsWith("\n") ? "\n" : "";
-            lines[matched] = replacement + ending;
-            return String.join("", lines);
-        }
-        String ending = original.contains("\r\n") ? "\r\n" : "\n";
-        return original + (original.isEmpty() || original.endsWith("\n") ? "" : ending) + replacement + ending;
+        return String.join("", lines);
     }
 
     private static Entry parse(String raw) {
@@ -90,11 +83,13 @@ final class AuthorizedKeys {
     }
 
     private static int skipSpace(String value, int start) {
-        while (start < value.length() && Character.isWhitespace(value.charAt(start))) start++;
+        while (start < value.length() && Character.isWhitespace(value.charAt(start))) {
+            start++;
+        }
         return start;
     }
 
-    private static boolean isRrsync(String options, String configuredCommand) {
+    private static boolean isNotRrsync(String options, String configuredCommand) {
         String command = null;
         boolean quoted = false;
         boolean escaped = false;
@@ -104,14 +99,12 @@ final class AuthorizedKeys {
             if (!quoted && current == ',') {
                 String option = options.substring(start, index);
                 if (option.regionMatches(true, 0, "command=", 0, 8)) {
-                    if (command != null) return false;
+                    if (command != null) return true;
                     String value = option.substring(8);
-                    if (value.length() < 2 || value.charAt(0) != '"' || value.charAt(value.length() - 1) != '"') return false;
+                    if (value.length() < 2 || value.charAt(0) != '"' || value.charAt(value.length() - 1) != '"') return true;
                     StringBuilder decoded = new StringBuilder();
                     for (int part = 1; part < value.length() - 1; part++) {
-                        if (value.charAt(part) == '\\') {
-                            if (++part >= value.length() - 1) return false;
-                        }
+                        if (value.charAt(part) == '\\' && part + 1 < value.length() - 1 && value.charAt(part + 1) == '"') part++;
                         decoded.append(value.charAt(part));
                     }
                     command = decoded.toString();
@@ -121,20 +114,20 @@ final class AuthorizedKeys {
             else if (current == '\\') escaped = true;
             else if (current == '"') quoted = !quoted;
         }
-        if (quoted || escaped || command == null) return false;
+        if (quoted || escaped || command == null) return true;
         List<String> words = shellWords(command);
-        if (words == null || words.size() < 2) return false;
+        if (words == null || words.size() < 2) return true;
         String executable = words.getFirst();
         if (executable.equals("exec")) {
             words = words.subList(1, words.size());
-            if (words.size() < 2) return false;
+            if (words.size() < 2) return true;
             executable = words.getFirst();
         }
-        if (!executable.equals(configuredCommand) && !executable.equals("rrsync") && !executable.endsWith("/rrsync")) return false;
+        if (!executable.equals(configuredCommand) && !executable.equals("rrsync") && !executable.endsWith("/rrsync")) return true;
         for (int index = 1; index < words.size() - 1; index++) {
-            if (!RRSYNC_FLAGS.contains(words.get(index))) return false;
+            if (!RRSYNC_FLAGS.contains(words.get(index))) return true;
         }
-        return !words.getLast().isEmpty() && !words.getLast().startsWith("-");
+        return words.getLast().isEmpty() || words.getLast().startsWith("-");
     }
 
     private static List<String> shellWords(String value) {
@@ -174,6 +167,7 @@ final class AuthorizedKeys {
     }
 
     private record Entry(String options, String comment) {
+
     }
 
 }

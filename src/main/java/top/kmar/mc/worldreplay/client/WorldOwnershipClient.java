@@ -10,25 +10,27 @@ import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.Base64;
-import java.util.Objects;
-import java.util.Set;
-import java.util.UUID;
-import java.util.List;
+import java.util.*;
 import java.util.concurrent.*;
 
 /** 有界、无重定向的协调请求；仅在后台调用，不记录凭据或服务端正文。 */
 final class WorldOwnershipClient {
+
     private static final Set<String> PHASES = Set.of("PREPARING", "STARTING", "RUNNING", "STOPPING", "COMMITTING");
 
     record View(String worldId, long epoch, String sessionId, String phase, boolean hasSave,
                 Long baseVersion, Long committedVersion, int heartbeatIntervalSeconds) {
+
         void checkSession(LocalWorldSession session) throws IOException {
             if (!worldId.equals(session.worldId()) || (session.sessionId() != null
                 && (!sessionId.equals(session.sessionId()) || epoch != session.epoch()))) {
                 throw new IOException("Ownership response does not match session");
             }
+            if (session.sessionId() != null && !Objects.equals(session.baseVersion(), baseVersion)) {
+                throw new IOException("Ownership base version changed within session");
+            }
         }
+
     }
 
     static View acquire(ClientConnectionSettings settings, String user, LocalWorldSession session) throws IOException {
@@ -41,11 +43,13 @@ final class WorldOwnershipClient {
         return view;
     }
 
-    static View command(ClientConnectionSettings settings, String user, LocalWorldSession session,
-                        String action, String stage) throws IOException {
+    static View command(
+        ClientConnectionSettings settings, String user, LocalWorldSession session,
+        String action, String stage
+    ) throws IOException {
         JsonObject body = identity(session);
         if (stage != null) body.addProperty("stage", stage);
-        if ("SAVE_SYNCED".equals(stage)) body.add("baseVersion", com.google.gson.JsonNull.INSTANCE);
+        if ("SAVE_SYNCED".equals(stage) || "UPLOAD_COMPLETE".equals(stage)) addBase(body, session.baseVersion());
         String response = post(settings, user, action, body, false);
         View view = parse(response);
         view.checkSession(session);
@@ -57,7 +61,7 @@ final class WorldOwnershipClient {
         post(settings, user, "cancel-creation", identity(session), true);
     }
 
-    private static JsonObject identity(LocalWorldSession session) {
+    static JsonObject identity(LocalWorldSession session) {
         JsonObject body = new JsonObject();
         body.addProperty("worldId", session.worldId());
         body.addProperty("deviceId", session.deviceId());
@@ -66,8 +70,15 @@ final class WorldOwnershipClient {
         return body;
     }
 
-    private static String post(ClientConnectionSettings settings, String user, String action,
-                               JsonObject body, boolean noContent) throws IOException {
+    static void addBase(JsonObject body, Long base) {
+        if (base == null) body.add("baseVersion", com.google.gson.JsonNull.INSTANCE);
+        else body.addProperty("baseVersion", base);
+    }
+
+    static String post(
+        ClientConnectionSettings settings, String user, String action,
+        JsonObject body, boolean noContent
+    ) throws IOException {
         try (var client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5))
             .followRedirects(HttpClient.Redirect.NEVER).build()) {
             String credentials = Base64.getEncoder().encodeToString((user + ":" + settings.token()).getBytes(StandardCharsets.UTF_8));
@@ -81,7 +92,7 @@ final class WorldOwnershipClient {
                 var response = pending.get(10, TimeUnit.SECONDS);
                 byte[] bytes = response.body();
                 int status = response.statusCode();
-                if (noContent ? status != 204 : status != 200 && status != 201) {
+                if (noContent ? status != 204 : status != 200 && status != 201 && status != 202) {
                     throw new IOException("Ownership request failed: HTTP " + status);
                 }
                 if (noContent && bytes.length != 0) throw new IOException("Unexpected cancellation response");
@@ -100,14 +111,25 @@ final class WorldOwnershipClient {
     }
 
     private static final class BoundedBody implements HttpResponse.BodySubscriber<byte[]> {
+
         private final HttpResponse.BodySubscriber<byte[]> delegate = HttpResponse.BodySubscribers.ofByteArray();
         private Flow.Subscription subscription;
         private int size;
         private boolean done;
 
-        @Override public CompletionStage<byte[]> getBody() { return delegate.getBody(); }
-        @Override public void onSubscribe(Flow.Subscription value) { subscription = value; delegate.onSubscribe(value); }
-        @Override public void onNext(List<ByteBuffer> items) {
+        @Override
+        public CompletionStage<byte[]> getBody() {
+            return delegate.getBody();
+        }
+
+        @Override
+        public void onSubscribe(Flow.Subscription value) {
+            subscription = value;
+            delegate.onSubscribe(value);
+        }
+
+        @Override
+        public void onNext(List<ByteBuffer> items) {
             if (done) return;
             for (var item : items) {
                 if (item.remaining() > 65536 - size) {
@@ -120,8 +142,23 @@ final class WorldOwnershipClient {
             }
             delegate.onNext(items);
         }
-        @Override public void onError(Throwable failure) { if (!done) { done = true; delegate.onError(failure); } }
-        @Override public void onComplete() { if (!done) { done = true; delegate.onComplete(); } }
+
+        @Override
+        public void onError(Throwable failure) {
+            if (!done) {
+                done = true;
+                delegate.onError(failure);
+            }
+        }
+
+        @Override
+        public void onComplete() {
+            if (!done) {
+                done = true;
+                delegate.onComplete();
+            }
+        }
+
     }
 
     static View parse(String json) throws IOException {
@@ -161,4 +198,5 @@ final class WorldOwnershipClient {
         if (!UUID.fromString(value).toString().equals(value)) throw new IllegalArgumentException();
         return value;
     }
+
 }

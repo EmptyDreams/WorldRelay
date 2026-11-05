@@ -51,20 +51,13 @@ public final class RegistrationHandler implements HttpHandler {
             HttpResponses.error(exchange, 400, "INVALID_REGISTRATION", "Expected a valid username");
             return;
         }
-        UserStore.Registration registration;
-        try {
-            registration = users.register(username, overwrite);
-        } catch (UserStore.AuthorizationConflictException conflict) {
-            HttpResponses.error(exchange, 409, "AUTHORIZED_KEYS_CONFLICT", "Username has an unmanaged or ambiguous SSH authorization");
-            return;
-        }
+        UserStore.Registration registration = users.register(username, overwrite);
         if (registration == null) {
             HttpResponses.error(exchange, 409, "USERNAME_EXISTS", "Username already registered");
             return;
         }
         String json = new JsonWriter().beginObject()
-            .name("username").value(username).name("key").value(registration.key())
-            .name("publicKey").value(registration.publicKey()).name("privateKey").value(registration.privateKey())
+            .name("username").value(username).name("token").value(registration.token())
             .endObject().finish();
         exchange.getResponseHeaders().set("Cache-Control", "no-store");
         HttpResponses.bytes(exchange, registration.overwritten() ? 200 : 201,

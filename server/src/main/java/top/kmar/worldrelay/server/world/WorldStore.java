@@ -4,6 +4,7 @@ import top.kmar.worldrelay.server.auth.UserStore;
 import top.kmar.worldrelay.server.protocol.HostEndpoint;
 import top.kmar.worldrelay.server.protocol.OwnershipView;
 import top.kmar.worldrelay.server.protocol.WorldSummary;
+import top.kmar.worldrelay.snapshot.SnapshotFiles;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -181,6 +182,12 @@ public final class WorldStore implements AutoCloseable {
         validateId(requestId);
         Entry entry = entry(worldId);
         var state = entry.metadata.state();
+        for (var committed : entry.metadata.commits()) {
+            var owner = committed.owner();
+            if (owner.username().equals(username) && owner.deviceId().equals(deviceId) && owner.requestId().equals(requestId)) {
+                throw conflict("ACQUISITION_COMPLETED", "Acquisition has already committed");
+            }
+        }
         for (var cancelled : entry.metadata.cancellations()) {
             var owner = cancelled.owner();
             if (owner.username().equals(username) && owner.deviceId().equals(deviceId) && owner.requestId().equals(requestId)) {
@@ -294,6 +301,93 @@ public final class WorldStore implements AutoCloseable {
         return entry;
     }
 
+    public record SnapshotSource(Path directory, String manifestHash) {
+
+    }
+
+    /** 只在很短的同步边界中检查任期；复制、摘要计算不持有全局所有权锁。 */
+    public synchronized SnapshotSource prepareTransfer(String worldId, Identity identity, Long baseVersion, boolean upload)
+        throws IOException, WorldAccessException {
+        Entry entry = owned(worldId, identity);
+        var state = entry.metadata.state();
+        checkBase(state, baseVersion);
+        if (upload) {
+            if (state.phase() != WorldPhase.STOPPING && state.phase() != WorldPhase.COMMITTING) {
+                throw conflict("INVALID_PHASE", "World must be stopped before upload");
+            }
+            if (state.phase() == WorldPhase.STOPPING) persist(entry, state.transition(WorldPhase.COMMITTING, null));
+        } else if (state.phase() != WorldPhase.PREPARING && state.phase() != WorldPhase.STARTING) {
+            throw conflict("INVALID_PHASE", "World cannot be downloaded in this phase");
+        }
+        touch(entry);
+        if (baseVersion == null) return null;
+        if (entry.metadata.commits().isEmpty()) throw conflict("SNAPSHOT_UNAVAILABLE", "Committed snapshot is unavailable");
+        var receipt = entry.metadata.commits().getLast();
+        Path path = root.resolve(worldId).resolve("snapshots").resolve(receipt.uploadId());
+        requireLocalPath(path, true);
+        return new SnapshotSource(path, receipt.manifestHash());
+    }
+
+    /** 响应丢失后即使已有下一位房主，也能用原身份和原摘要查询幂等结果。 */
+    public synchronized Long committedResult(String worldId, Identity identity, String uploadId, String hash, Long base)
+        throws WorldAccessException {
+        validateId(uploadId);
+        for (var receipt : entry(worldId).metadata.commits()) {
+            if (!receipt.uploadId().equals(uploadId)) continue;
+            if (!receipt.matches(identity)) throw new WorldAccessException(403, "OWNER_MISMATCH", "Commit identity does not match");
+            if (!receipt.manifestHash().equals(hash) || !Objects.equals(receipt.baseVersion(), base)) {
+                throw conflict("COMMIT_CONFLICT", "Commit request differs from published snapshot");
+            }
+            return receipt.version();
+        }
+        return null;
+    }
+
+    public synchronized Path candidateDirectory(String worldId, Identity identity) throws IOException, WorldAccessException {
+        owned(worldId, identity);
+        return Files.createTempDirectory(root.resolve(worldId), ".candidate-");
+    }
+
+    /** candidate 由协调服务私有持有，SSH 从未获得此路径；最终元数据原子发布同时释放所有权。 */
+    public synchronized long publishSnapshot(
+        String worldId, Identity identity, Long baseVersion,
+        String uploadId, String hash, Path candidate
+    ) throws IOException, WorldAccessException {
+        Long completed = committedResult(worldId, identity, uploadId, hash, baseVersion);
+        if (completed != null) return completed;
+        Entry entry = owned(worldId, identity);
+        var state = entry.metadata.state();
+        checkBase(state, baseVersion);
+        if (state.phase() != WorldPhase.COMMITTING) throw conflict("INVALID_PHASE", "Upload has not begun");
+        long version = baseVersion == null ? 1 : Math.addExact(baseVersion, 1);
+        var commits = new ArrayList<>(entry.metadata.commits());
+        commits.add(new WorldMetadata.Commit(uploadId, state.owner(), state.epoch(), baseVersion, version, hash));
+        var free = new WorldMetadata.State(state.epoch(), WorldPhase.FREE, null, null, version, Instant.now().toString(), null);
+        var next = new WorldMetadata(worldId, entry.metadata.name(), entry.metadata.createdAt(), free, entry.metadata.cancellations(), commits);
+        // 先确认元数据不会因审计历史超过上限而失败。
+        if (next.toJson().getBytes(StandardCharsets.UTF_8).length > MAX_METADATA_BYTES) throw new IOException("World metadata exceeds limit");
+        Path world = root.resolve(worldId);
+        if (!candidate.getParent().getParent().equals(world) || !candidate.getParent().getFileName().toString().startsWith(".candidate-")) {
+            throw new IOException("Candidate must be private to world store");
+        }
+        Path snapshots = world.resolve("snapshots");
+        Files.createDirectories(snapshots);
+        requireLocalPath(snapshots, true);
+        Path target = snapshots.resolve(uploadId);
+        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+            // 上次可能在快照落盘后、元数据提交前崩溃。旧候选只能按完全相同清单复用。
+            var manifest = top.kmar.worldrelay.snapshot.SnapshotManifest.read(target.resolve("manifest.bin"), hash);
+            SnapshotFiles.verify(target.resolve("world"), manifest);
+        } else Files.move(candidate, target, StandardCopyOption.ATOMIC_MOVE);
+        SnapshotFiles.forceDirectory(snapshots);
+        SnapshotFiles.forceDirectory(world);
+        persist(entry, next);
+        entry.seen = false;
+        entry.joinReady = false;
+        entry.players = null;
+        return version;
+    }
+
     private Entry owned(String worldId, Identity identity) throws WorldAccessException {
         Objects.requireNonNull(identity);
         Entry entry = entry(worldId);
@@ -377,6 +471,7 @@ public final class WorldStore implements AutoCloseable {
             writeForced(temporary, next.toJson(), StandardOpenOption.TRUNCATE_EXISTING);
             try {
                 metadataPublisher.publish(temporary, target);
+                SnapshotFiles.forceDirectory(directory);
             } catch (IOException | RuntimeException | Error failure) {
                 // 原子移动的异常可能意味着结果不确定，不能继续用旧内存授予或修改所有权。
                 entry.unavailable = true;
