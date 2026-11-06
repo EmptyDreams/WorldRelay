@@ -14,7 +14,9 @@ import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -23,12 +25,15 @@ import java.util.concurrent.TimeUnit;
 /** 用户名及高熵密钥摘要的持久存储；进程文件锁和实例锁共同串行化修改。 */
 public final class UserStore implements AutoCloseable {
 
+    private static final Duration TRANSFER_KEY_LIFETIME = Duration.ofHours(1);
+
     private final Path file;
     private final FileChannel lockChannel;
     private final FileLock fileLock;
     private final RegistrationFiles files;
     private final SshRegistrationConfig ssh;
     private final boolean mungeSupported;
+    private final OpenSshCapabilities.ExpiryTime expiryTime;
     private final SecureRandom random = new SecureRandom();
     private final Map<String, byte[]> users = new TreeMap<>();
     private byte[] usersImage;
@@ -38,7 +43,7 @@ public final class UserStore implements AutoCloseable {
 
     private UserStore(
         Path file, FileChannel lockChannel, FileLock fileLock, RegistrationFiles files, SshRegistrationConfig ssh,
-        java.util.function.Predicate<String> capabilities
+        java.util.function.Predicate<String> capabilities, OpenSshCapabilities.ExpiryTime expiryTime
     ) {
         this.file = file;
         this.lockChannel = lockChannel;
@@ -46,6 +51,7 @@ public final class UserStore implements AutoCloseable {
         this.files = files;
         this.ssh = ssh;
         this.mungeSupported = capabilities.test(ssh.rrsyncCommand());
+        this.expiryTime = expiryTime;
     }
 
     public static UserStore open(Path path) throws IOException {
@@ -57,12 +63,12 @@ public final class UserStore implements AutoCloseable {
     }
 
     static UserStore open(Path path, SshRegistrationConfig ssh, RegistrationFiles.Publisher publisher) throws IOException {
-        return open(path, ssh, publisher, RrsyncCapabilities::supportsMunge);
+        return open(path, ssh, publisher, RrsyncCapabilities::supportsMunge, OpenSshCapabilities.detect());
     }
 
     static UserStore open(
         Path path, SshRegistrationConfig ssh, RegistrationFiles.Publisher publisher,
-        java.util.function.Predicate<String> capabilities
+        java.util.function.Predicate<String> capabilities, OpenSshCapabilities.ExpiryTime expiryTime
     ) throws IOException {
         Path file = RegistrationFiles.canonicalFile(path);
         FileChannel channel = FileChannel.open(file.resolveSibling(file.getFileName() + ".lock"),
@@ -79,7 +85,7 @@ public final class UserStore implements AutoCloseable {
                 throw new IOException("User store is already in use");
             }
             files = RegistrationFiles.open(file, ssh.authorizedKeysFile(), publisher);
-            UserStore store = new UserStore(file, channel, lock, files, ssh, capabilities);
+            UserStore store = new UserStore(file, channel, lock, files, ssh, capabilities, expiryTime);
             store.load();
             store.clearTransferKeys(); // 重启后不再信任上个进程签发的临时传输凭据。
             store.hardenRegisteredKeys();
@@ -154,12 +160,17 @@ public final class UserStore implements AutoCloseable {
         }
         String command = shellQuote(ssh.rrsyncCommand()) + (readOnly ? " -ro " : " -wo ")
             + (mungeSupported ? "-munge " : "") + shellQuote(canonical.toString());
-        Instant expires = Instant.now().plusSeconds(6 * 60 * 60);
-        // OpenSSH 7.6 没有 expiry-time；强制命令在 Java 停服期间也必须拒绝过期密钥。
-        String checked = "worldrelay_now=$(/bin/date +%s) || exit 1; [ \"$worldrelay_now\" -lt " + expires.getEpochSecond()
-            + " ] || exit 1; exec " + command;
-        command = "/bin/sh -c " + shellQuote(checked);
-        String line = "restrict,command=\""
+        Instant expires = Instant.now().plus(TRANSFER_KEY_LIFETIME).truncatedTo(ChronoUnit.SECONDS);
+        String expiryOption = "";
+        if (expiryTime == OpenSshCapabilities.ExpiryTime.UNSUPPORTED) {
+            // 旧版 sshd 由强制命令检查时间，Java 停服后仍不能用过期密钥发起传输。
+            String checked = "worldrelay_now=$(/bin/date +%s) || exit 1; [ \"$worldrelay_now\" -lt " + expires.getEpochSecond()
+                + " ] || exit 1; exec " + command;
+            command = "/bin/sh -c " + shellQuote(checked);
+        } else {
+            expiryOption = "expiry-time=\"" + expiryTime.format(expires) + "\",";
+        }
+        String line = "restrict," + expiryOption + "command=\""
             // OpenSSH 的 authorized_keys 只反转义双引号，不能将普通反斜杠加倍。
             + command.replace("\"", "\\\"") + "\" " + pair.publicKey() + "\n";
         if (line.getBytes(StandardCharsets.UTF_8).length > 8192) throw new IOException("SSH transfer authorization is too long");

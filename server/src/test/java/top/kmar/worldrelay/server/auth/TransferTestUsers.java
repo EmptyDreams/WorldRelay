@@ -11,7 +11,7 @@ public final class TransferTestUsers {
     }
 
     public static UserStore open(Path path, SshRegistrationConfig ssh) throws IOException {
-        return UserStore.open(path, ssh, RegistrationFiles::atomicMove, command -> true);
+        return UserStore.open(path, ssh, RegistrationFiles::atomicMove, command -> true, OpenSshCapabilities.ExpiryTime.UNSUPPORTED);
     }
 
     /** 测试 SSH 主机的独立公钥，与账号注册返回值无关。 */
