@@ -34,11 +34,7 @@ public final class SharedWorldSettingsScreen extends Screen {
     private static final int GAP = 6;
     private static final int PROTOCOL_WIDTH = 70;
     private static final int PORT_WIDTH = 64;
-    private static final int ROW_HEIGHT = 36;
-
-    private enum SettingsTab {
-        API, SYNC
-    }
+    private static final int ROW_HEIGHT = 34;
 
     private final Screen parent;
     // 草稿独立于控件保存，窗口缩放或重建控件时不丢失尚未保存的输入。
@@ -49,7 +45,6 @@ public final class SharedWorldSettingsScreen extends Screen {
     private RsyncMode rsyncModeDraft = RsyncMode.defaultMode();
     private String rsyncPathDraft = "";
     private String sshPathDraft = "";
-    private SettingsTab selectedTab = SettingsTab.API;
     private final List<RsyncMode> availableModes = RsyncMode.availableModes();
     private final Map<RsyncMode, Button> modeButtons = new EnumMap<>(RsyncMode.class);
     private boolean loadStarted;
@@ -60,20 +55,17 @@ public final class SharedWorldSettingsScreen extends Screen {
     private String ioError;
     private Component status = CommonComponents.EMPTY;
     private int formX;
-    private int formY;
     private int formWidth;
     private Path settingsFile;
+    private int formY;
     private Button protocolButton;
     private Button httpsOption;
     private Button httpOption;
     private EditBox domainField;
     private EditBox portField;
     private EditBox tokenField;
-    private EditBox playerNameField;
     private EditBox rsyncPathField;
     private EditBox sshPathField;
-    private Button connectionTabButton;
-    private Button syncTabButton;
     private Button visibilityButton;
     private Button saveButton;
     private Button cancelButton;
@@ -89,21 +81,15 @@ public final class SharedWorldSettingsScreen extends Screen {
         var client = Objects.requireNonNull(this.minecraft, "Screen must be initialized with a Minecraft client");
         this.formWidth = Math.min(360, this.width - 32);
         this.formX = (this.width - this.formWidth) / 2;
-        this.formY = Math.max(70, (this.height - 180) / 2);
+        this.formY = Math.max(26, (this.height - 208) / 2);
         this.settingsFile = client.gameDirectory.toPath().resolve("config/worldrelay-client.json");
         int domainWidth = this.formWidth - PROTOCOL_WIDTH - GAP * 2 - PORT_WIDTH;
         int portX = this.formX + this.formWidth - PORT_WIDTH;
-        int tabWidth = (this.formWidth - GAP) / 2;
-        this.connectionTabButton = this.addRenderableWidget(Button.builder(label("connection_tab"),
-            button -> this.selectTab(SettingsTab.API)).bounds(this.formX, 42, tabWidth, 20).build());
-        this.syncTabButton = this.addRenderableWidget(Button.builder(label("sync_tab"),
-            button -> this.selectTab(SettingsTab.SYNC)).bounds(this.formX + tabWidth + GAP, 42,
-            this.formWidth - tabWidth - GAP, 20).build());
 
         this.protocolButton = this.addRenderableWidget(Button.builder(this.protocolCaption(),
                 button -> this.setProtocolMenuOpen(!this.protocolMenuOpen))
-            .bounds(this.formX, this.formY + 12, PROTOCOL_WIDTH, 20).build());
-        this.domainField = new EditBox(this.font, this.formX + PROTOCOL_WIDTH + GAP, this.formY + 12,
+            .bounds(this.formX, this.formY + 10, PROTOCOL_WIDTH, 20).build());
+        this.domainField = new EditBox(this.font, this.formX + PROTOCOL_WIDTH + GAP, this.formY + 10,
             domainWidth, 20, label("domain"));
         this.domainField.setMaxLength(512);
         this.domainField.setHint(Component.literal("relay.example.com"));
@@ -115,7 +101,7 @@ public final class SharedWorldSettingsScreen extends Screen {
         });
         this.addRenderableWidget(this.domainField);
 
-        this.portField = new EditBox(this.font, portX, this.formY + 12, PORT_WIDTH, 20, label("port"));
+        this.portField = new EditBox(this.font, portX, this.formY + 10, PORT_WIDTH, 20, label("port"));
         this.portField.setMaxLength(5);
         this.portField.setFilter(value -> value.matches("[0-9]*"));
         this.portField.setValue(this.portDraft);
@@ -125,17 +111,17 @@ public final class SharedWorldSettingsScreen extends Screen {
         });
         this.addRenderableWidget(this.portField);
 
-        this.playerNameField = new EditBox(this.font, this.formX, this.formY + ROW_HEIGHT + 12,
+        var playerNameField = new EditBox(this.font, this.formX, this.formY + ROW_HEIGHT + 10,
             this.formWidth, 20, label("player_name"));
-        this.playerNameField.setMaxLength(64);
-        this.playerNameField.setValue(client.getUser().getName());
-        this.playerNameField.setEditable(false);
-        this.playerNameField.setTextColorUneditable(SECONDARY_COLOR);
-        this.playerNameField.active = false;
-        // 仅绘制玩家名，不加入交互控件列表，禁止点击和键盘聚焦。
-        this.addRenderableOnly(this.playerNameField);
+        playerNameField.setMaxLength(64);
+        playerNameField.setValue(client.getUser().getName());
+        playerNameField.setEditable(false);
+        playerNameField.setTextColorUneditable(SECONDARY_COLOR);
+        playerNameField.active = false;
+        // 玩家名只读，不参与点击和键盘聚焦。
+        this.addRenderableOnly(playerNameField);
 
-        this.tokenField = new EditBox(this.font, this.formX, this.formY + ROW_HEIGHT * 2 + 12,
+        this.tokenField = new EditBox(this.font, this.formX, this.formY + ROW_HEIGHT * 2 + 10,
             this.formWidth - 56, 20, label("token")) {
             @Override
             protected @NotNull MutableComponent createNarrationMessage() {
@@ -163,7 +149,7 @@ public final class SharedWorldSettingsScreen extends Screen {
         this.visibilityButton = this.addRenderableWidget(Button.builder(label(this.showToken ? "hide" : "show"), button -> {
             this.showToken = !this.showToken;
             button.setMessage(label(this.showToken ? "hide" : "show"));
-        }).bounds(this.formX + this.formWidth - 50, this.formY + ROW_HEIGHT * 2 + 12, 50, 20).build());
+        }).bounds(this.formX + this.formWidth - 50, this.formY + ROW_HEIGHT * 2 + 10, 50, 20).build());
 
         this.modeButtons.clear();
         int modeWidth = (this.formWidth - GAP * (this.availableModes.size() - 1)) / this.availableModes.size();
@@ -172,14 +158,14 @@ public final class SharedWorldSettingsScreen extends Screen {
             Button button = this.addRenderableWidget(Button.builder(modeLabel(mode), clicked -> {
                 this.rsyncModeDraft = mode;
                 this.inputChanged();
-            }).bounds(this.formX + index * (modeWidth + GAP), this.formY + 12, modeWidth, 20).build());
+            }).bounds(this.formX + index * (modeWidth + GAP), this.formY + ROW_HEIGHT * 3 + 10, modeWidth, 20).build());
             button.setTooltip(Tooltip.create(label("rsync_mode." + mode.name().toLowerCase(Locale.ROOT) + "_tooltip")));
             this.modeButtons.put(mode, button);
         }
 
         // 自定义路径并排占一行，使连接与工具设置在最小窗口中也能完整显示。
         int pathWidth = (this.formWidth - GAP) / 2;
-        this.rsyncPathField = new EditBox(this.font, this.formX, this.formY + ROW_HEIGHT + 12,
+        this.rsyncPathField = new EditBox(this.font, this.formX, this.formY + ROW_HEIGHT * 4 + 10,
             pathWidth, 20, label("rsync_path"));
         this.rsyncPathField.setMaxLength(ClientConnectionSettings.MAX_RSYNC_PATH_LENGTH);
         this.rsyncPathField.setHint(label("executable_path_hint"));
@@ -191,7 +177,7 @@ public final class SharedWorldSettingsScreen extends Screen {
         });
         this.addRenderableWidget(this.rsyncPathField);
 
-        this.sshPathField = new EditBox(this.font, this.formX + pathWidth + GAP, this.formY + ROW_HEIGHT + 12,
+        this.sshPathField = new EditBox(this.font, this.formX + pathWidth + GAP, this.formY + ROW_HEIGHT * 4 + 10,
             this.formWidth - pathWidth - GAP, 20, label("ssh_path"));
         this.sshPathField.setMaxLength(ClientConnectionSettings.MAX_RSYNC_PATH_LENGTH);
         this.sshPathField.setHint(label("executable_path_hint"));
@@ -210,9 +196,9 @@ public final class SharedWorldSettingsScreen extends Screen {
             .bounds(this.formX + buttonWidth + GAP, this.height - 28, this.formWidth - buttonWidth - GAP, 20).build());
         // 选项参与输入与旁白，在 render 末尾绘制，覆盖下方控件及标签。
         this.httpsOption = this.addWidget(Button.builder(Component.literal("HTTPS"), button -> this.selectProtocol("https"))
-            .bounds(this.formX, this.formY + 34, PROTOCOL_WIDTH, 20).build());
+            .bounds(this.formX, this.formY + 32, PROTOCOL_WIDTH, 20).build());
         this.httpOption = this.addWidget(Button.builder(Component.literal("HTTP"), button -> this.selectProtocol("http"))
-            .bounds(this.formX, this.formY + 54, PROTOCOL_WIDTH, 20).build());
+            .bounds(this.formX, this.formY + 52, PROTOCOL_WIDTH, 20).build());
         this.setProtocolMenuOpen(false);
         this.updateControls();
         if (!this.loadStarted) {
@@ -228,19 +214,16 @@ public final class SharedWorldSettingsScreen extends Screen {
         return label("rsync_mode." + mode.name().toLowerCase(Locale.ROOT));
     }
 
-    private void selectTab(SettingsTab tab) {
-        this.selectedTab = tab;
-        this.setProtocolMenuOpen(false);
-        this.clearFocus();
-        this.updateControls();
-    }
-
     private Component protocolCaption() {
         return Component.translatable(PREFIX + "protocol_selection", this.protocolDraft.equals("http") ? "HTTP" : "HTTPS");
     }
 
     private void setProtocolMenuOpen(boolean open) {
         this.protocolMenuOpen = open;
+        if (open) {
+            this.httpsOption.setY(this.protocolButton.getY() + 22);
+            this.httpOption.setY(this.protocolButton.getY() + 42);
+        }
         this.httpsOption.visible = open;
         this.httpOption.visible = open;
         if (open) {
@@ -274,40 +257,29 @@ public final class SharedWorldSettingsScreen extends Screen {
 
     private void updateControls() {
         boolean busy = this.loading || this.saving;
-        boolean connection = this.selectedTab == SettingsTab.API;
-        boolean sync = this.selectedTab == SettingsTab.SYNC;
-        boolean custom = sync && this.rsyncModeDraft == RsyncMode.CUSTOM;
-        this.connectionTabButton.active = !busy && !connection;
-        this.syncTabButton.active = !busy && !sync;
-        this.protocolButton.visible = connection;
-        this.domainField.visible = connection;
-        this.portField.visible = connection;
-        this.playerNameField.visible = connection;
-        this.tokenField.visible = connection;
-        this.visibilityButton.visible = connection;
-        this.protocolButton.active = !busy && connection;
+        boolean custom = this.rsyncModeDraft == RsyncMode.CUSTOM;
+        this.protocolButton.active = !busy;
         this.httpsOption.active = !busy;
         this.httpOption.active = !busy;
-        if (busy || !connection) {
+        if (busy) {
             this.setProtocolMenuOpen(false);
         }
-        this.domainField.setEditable(!busy && connection);
-        this.portField.setEditable(!busy && connection);
-        this.tokenField.setEditable(!busy && connection);
+        this.domainField.setEditable(!busy);
+        this.portField.setEditable(!busy);
+        this.tokenField.setEditable(!busy);
         this.rsyncPathField.visible = custom;
         this.sshPathField.visible = custom;
         this.rsyncPathField.setEditable(!busy && custom);
         this.sshPathField.setEditable(!busy && custom);
         this.rsyncPathField.active = !busy && custom;
         this.sshPathField.active = !busy && custom;
-        this.domainField.active = !busy && connection;
-        this.portField.active = !busy && connection;
-        this.tokenField.active = !busy && connection;
+        this.domainField.active = !busy;
+        this.portField.active = !busy;
+        this.tokenField.active = !busy;
         for (var entry : this.modeButtons.entrySet()) {
-            entry.getValue().visible = sync;
-            entry.getValue().active = !busy && sync && entry.getKey() != this.rsyncModeDraft;
+            entry.getValue().active = !busy && entry.getKey() != this.rsyncModeDraft;
         }
-        this.visibilityButton.active = !busy && connection;
+        this.visibilityButton.active = !busy;
         this.cancelButton.active = !this.saving;
         String validationError = null;
         try {
@@ -351,10 +323,7 @@ public final class SharedWorldSettingsScreen extends Screen {
             }
             this.updateControls();
             if (client.screen == this) {
-                this.setInitialFocus(switch (this.selectedTab) {
-                    case API -> this.domainField;
-                    case SYNC -> this.modeButtons.get(this.rsyncModeDraft);
-                });
+                this.setInitialFocus(this.domainField);
             }
         }));
     }
@@ -421,7 +390,7 @@ public final class SharedWorldSettingsScreen extends Screen {
             }
         }
         boolean handled = super.keyPressed(keyCode, scanCode, modifiers);
-        if (this.protocolMenuOpen && this.getFocused() != this.protocolButton
+        if (this.protocolMenuOpen && !this.protocolButton.isFocused()
             && this.getFocused() != this.httpsOption && this.getFocused() != this.httpOption) {
             this.setProtocolMenuOpen(false);
         }
@@ -439,38 +408,41 @@ public final class SharedWorldSettingsScreen extends Screen {
     public void render(@NotNull GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         super.render(graphics, mouseX, mouseY, partialTick);
         graphics.drawCenteredString(this.font, this.title, this.width / 2, 12, TEXT_COLOR);
-        graphics.drawCenteredString(this.font, label("subtitle"), this.width / 2, 28, SECONDARY_COLOR);
-        if (this.selectedTab == SettingsTab.SYNC) {
-            graphics.drawString(this.font, Component.translatable(PREFIX + "rsync_mode", modeLabel(this.rsyncModeDraft)),
-                this.formX, this.formY, TEXT_COLOR);
-            if (this.rsyncModeDraft == RsyncMode.CUSTOM) {
-                graphics.drawString(this.font, label("rsync_path"), this.formX, this.formY + ROW_HEIGHT, TEXT_COLOR);
-                graphics.drawString(this.font, label("ssh_path"), this.sshPathField.getX(), this.formY + ROW_HEIGHT, TEXT_COLOR);
-            } else {
-                int descriptionY = this.formY + ROW_HEIGHT;
-                Component description = label("rsync_mode." + this.rsyncModeDraft.name().toLowerCase(Locale.ROOT) + "_tooltip");
-                for (var line : this.font.split(description, this.formWidth)) {
-                    graphics.drawString(this.font, line, this.formX, descriptionY, SECONDARY_COLOR);
-                    descriptionY += this.font.lineHeight + 1;
-                }
-            }
+        graphics.drawString(this.font, label("protocol"), this.formX, this.formY, TEXT_COLOR);
+        graphics.drawString(this.font, label("domain"), this.formX + PROTOCOL_WIDTH + GAP, this.formY, TEXT_COLOR);
+        graphics.drawString(this.font, label("port"), this.formX + this.formWidth - PORT_WIDTH, this.formY, TEXT_COLOR);
+        graphics.drawString(this.font, label("player_name"), this.formX, this.formY + ROW_HEIGHT, TEXT_COLOR);
+        graphics.drawString(this.font, label("token"), this.formX, this.formY + ROW_HEIGHT * 2, TEXT_COLOR);
+        graphics.drawString(this.font, Component.translatable(PREFIX + "rsync_mode", modeLabel(this.rsyncModeDraft)),
+            this.formX, this.formY + ROW_HEIGHT * 3, TEXT_COLOR);
+        if (this.rsyncModeDraft == RsyncMode.CUSTOM) {
+            graphics.drawString(this.font, label("rsync_path"), this.formX, this.formY + ROW_HEIGHT * 4, TEXT_COLOR);
+            graphics.drawString(this.font, label("ssh_path"), this.sshPathField.getX(), this.formY + ROW_HEIGHT * 4, TEXT_COLOR);
         } else {
-            graphics.drawString(this.font, label("protocol"), this.formX, this.formY, TEXT_COLOR);
-            graphics.drawString(this.font, label("domain"), this.formX + PROTOCOL_WIDTH + GAP, this.formY, TEXT_COLOR);
-            graphics.drawString(this.font, label("port"), this.formX + this.formWidth - PORT_WIDTH, this.formY, TEXT_COLOR);
-            graphics.drawString(this.font, label("player_name"), this.formX, this.formY + ROW_HEIGHT, TEXT_COLOR);
-            graphics.drawString(this.font, label("token"), this.formX, this.formY + ROW_HEIGHT * 2, TEXT_COLOR);
+            int y = this.formY + ROW_HEIGHT * 4;
+            for (var line : this.font.split(label("rsync_mode." + this.rsyncModeDraft.name().toLowerCase(Locale.ROOT) + "_tooltip"), this.formWidth)) {
+                graphics.drawString(this.font, line, this.formX, y, SECONDARY_COLOR);
+                y += this.font.lineHeight + 1;
+            }
         }
-        int y = this.formY + ROW_HEIGHT * 3 + 4;
+        int statusY = this.formY + ROW_HEIGHT * 5;
+        int statusBottom = this.saveButton.getY() - 6;
+        int lineHeight = this.font.lineHeight + 1;
+        var lines = this.font.split(this.status, this.formWidth);
+        int visibleLines = Math.max(0, (statusBottom - statusY) / lineHeight);
         int color = this.loading || this.saving ? SECONDARY_COLOR : ERROR_COLOR;
-        for (var line : this.font.split(this.status, this.formWidth)) {
-            graphics.drawString(this.font, line, this.formX, y, color);
-            y += this.font.lineHeight + 1;
+        for (int index = 0; index < Math.min(lines.size(), visibleLines); index++) {
+            graphics.drawString(this.font, lines.get(index), this.formX, statusY + index * lineHeight, color);
+        }
+        // 小窗口中的长提示不覆盖底部按钮，悬停在提示区域可查看全文。
+        if (lines.size() > visibleLines && mouseX >= this.formX && mouseX < this.formX + this.formWidth
+            && mouseY >= statusY && mouseY < statusBottom) {
+            graphics.renderTooltip(this.font, lines, mouseX, mouseY);
         }
         if (this.protocolMenuOpen) {
             graphics.pose().pushPose();
             graphics.pose().translate(0, 0, 200);
-            graphics.fill(this.formX - 1, this.formY + 33, this.formX + PROTOCOL_WIDTH + 1, this.formY + 75, 0xFF202020);
+            graphics.fill(this.formX - 1, this.httpsOption.getY() - 1, this.formX + PROTOCOL_WIDTH + 1, this.httpOption.getBottom() + 1, 0xFF202020);
             this.httpsOption.render(graphics, mouseX, mouseY, partialTick);
             this.httpOption.render(graphics, mouseX, mouseY, partialTick);
             graphics.pose().popPose();
