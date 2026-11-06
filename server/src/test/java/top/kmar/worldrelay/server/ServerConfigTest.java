@@ -14,7 +14,7 @@ class ServerConfigTest {
     @TempDir
     Path directory;
 
-    /** 验证 SSH 公钥文件和传输目录默认随用户文件隔离，部署配置可独立指定路径及 rrsync 程序。 */
+    /** 验证 SSH 路径及对外连接地址由部署配置指定，非法的必填配置被拒绝。 */
     @Test
     void loadsSshRegistrationPathsAndRejectsEmptyValues() throws Exception {
         Path file = directory.resolve("ssh.properties");
@@ -26,12 +26,16 @@ class ServerConfigTest {
             ssh.authorized-keys-file=keys/authorized_keys
             ssh.transfer-directory=staging/users
             ssh.rrsync-command=/usr/local/bin/rrsync
+            ssh.public-host=[2001:db8::1]
+            ssh.public-port=2222
             """);
         var ssh = ServerConfig.load(file).ssh();
         assertEquals(Path.of("keys/authorized_keys"), ssh.authorizedKeysFile());
         assertEquals(Path.of("staging/users"), ssh.transferDirectory());
         assertEquals("/usr/local/bin/rrsync", ssh.rrsyncCommand());
-        for (String key : new String[]{"ssh.authorized-keys-file", "ssh.transfer-directory", "ssh.rrsync-command"}) {
+        assertEquals("2001:db8::1", ssh.publicHost());
+        assertEquals(2222, ssh.publicPort());
+        for (String key : new String[]{"ssh.authorized-keys-file", "ssh.transfer-directory", "ssh.rrsync-command", "ssh.public-host"}) {
             Files.writeString(file, key + "=\n");
             assertThrows(IllegalArgumentException.class, () -> ServerConfig.load(file));
         }

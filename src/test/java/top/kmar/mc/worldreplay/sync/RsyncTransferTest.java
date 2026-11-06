@@ -2,9 +2,10 @@ package top.kmar.mc.worldreplay.sync;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import top.kmar.worldrelay.sync.RsyncCommand;
 
-import java.net.InetSocketAddress;
 import java.nio.file.Path;
+import java.util.ArrayList;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -17,8 +18,8 @@ class RsyncTransferTest {
     @Test
     void uploadAndDownloadUseDeltaChecksumsDeletionAndExplicitSshWithSpaces() throws Exception {
         var tools = new BundledRsync.Executables(root.resolve("工具 目录/rsync.exe"), root.resolve("SSH 目录/ssh.exe"));
-        var endpoint = InetSocketAddress.createUnresolved("2001:db8::1", 2222);
-        var push = RsyncTransfer.command(tools, endpoint, "work", root.resolve("用户 配置/ssh.conf"), true);
+        var upload = RsyncCommand.create("2001:db8::1", 2222, "work", true);
+        var push = RsyncTransfer.command(tools, upload, root.resolve("用户 配置/ssh.conf"));
         assertTrue(push.contains("--no-whole-file"));
         assertTrue(push.contains("--checksum"));
         assertTrue(push.contains("--delete-delay"));
@@ -26,7 +27,7 @@ class RsyncTransferTest {
         assertEquals("./", push.get(push.size() - 2));
         assertEquals("work@[2001:db8::1]:./", push.getLast());
         assertTrue(push.get(push.indexOf("-e") + 1).contains("SSH 目录/ssh.exe\" -F \""));
-        var pull = RsyncTransfer.command(tools, endpoint, "work", root.resolve("ssh.conf"), false);
+        var pull = RsyncTransfer.command(tools, RsyncCommand.create("2001:db8::1", 2222, "work", false), root.resolve("ssh.conf"));
         assertEquals(push.getLast(), pull.get(pull.size() - 2));
         assertEquals("./", pull.getLast());
     }
@@ -35,9 +36,12 @@ class RsyncTransferTest {
     @Test
     void credentialsAreNotPrintedAndRemoteUserCannotContainOptions() {
         String privateKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nSECRET\n-----END OPENSSH PRIVATE KEY-----\n";
-        assertFalse(new RsyncTransfer.Credentials(privateKey, "work", "ssh-ed25519 AAAA").toString().contains("SECRET"));
-        assertThrows(IllegalArgumentException.class, () -> new RsyncTransfer.Credentials(privateKey, "-oProxyCommand=bad", "ssh-ed25519 AAAA"));
-        assertThrows(IllegalArgumentException.class, () -> new RsyncTransfer.Credentials(privateKey, "work", "ssh-ed25519 AAAA\nHost *"));
+        assertFalse(new RsyncTransfer.Credentials(privateKey, "ssh-ed25519 AAAA").toString().contains("SECRET"));
+        assertThrows(IllegalArgumentException.class, () -> RsyncCommand.create("files.example", 22, "-oProxyCommand=bad", true));
+        assertThrows(IllegalArgumentException.class, () -> new RsyncTransfer.Credentials(privateKey, "ssh-ed25519 AAAA\nHost *"));
+        var arguments = new ArrayList<>(RsyncCommand.create("files.example", 22, "work", true).arguments());
+        arguments.addFirst("--files-from=private-data");
+        assertThrows(IllegalArgumentException.class, () -> new RsyncCommand("files.example", 22, "work", arguments));
     }
 
 }

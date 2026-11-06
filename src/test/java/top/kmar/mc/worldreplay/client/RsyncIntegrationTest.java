@@ -96,7 +96,7 @@ class RsyncIntegrationTest {
 
     private ClientConnectionSettings settings(String token) {
         return new ClientConnectionSettings("http://127.0.0.1", Integer.parseInt(System.getenv("WORLDRELAY_SYNC_TEST_API_PORT")), token,
-            RsyncMode.BUNDLED, "", "", "127.0.0.1", Integer.parseInt(System.getenv("WORLDRELAY_SYNC_TEST_SSH_PORT")));
+            RsyncMode.BUNDLED, "", "");
     }
 
     private LocalWorldSession acquire(ClientConnectionSettings settings, String user, String world) throws Exception {

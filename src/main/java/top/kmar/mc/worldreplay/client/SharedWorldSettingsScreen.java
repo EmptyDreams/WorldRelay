@@ -46,8 +46,6 @@ public final class SharedWorldSettingsScreen extends Screen {
     private String domainDraft = "";
     private String portDraft = "443";
     private String tokenDraft = "";
-    private String rsyncAddressDraft = "";
-    private String rsyncPortDraft = "22";
     private RsyncMode rsyncModeDraft = RsyncMode.defaultMode();
     private String rsyncPathDraft = "";
     private String sshPathDraft = "";
@@ -71,8 +69,6 @@ public final class SharedWorldSettingsScreen extends Screen {
     private EditBox domainField;
     private EditBox portField;
     private EditBox tokenField;
-    private EditBox rsyncAddressField;
-    private EditBox rsyncPortField;
     private EditBox playerNameField;
     private EditBox rsyncPathField;
     private EditBox sshPathField;
@@ -129,28 +125,6 @@ public final class SharedWorldSettingsScreen extends Screen {
         });
         this.addRenderableWidget(this.portField);
 
-        this.rsyncAddressField = new EditBox(this.font, this.formX, this.formY + 12,
-            this.formWidth - PORT_WIDTH - GAP, 20, label("rsync_address"));
-        this.rsyncAddressField.setMaxLength(512);
-        this.rsyncAddressField.setHint(Component.literal("files.example.com"));
-        this.rsyncAddressField.setTooltip(Tooltip.create(label("rsync_address_tooltip")));
-        this.rsyncAddressField.setValue(this.rsyncAddressDraft);
-        this.rsyncAddressField.setResponder(value -> {
-            this.rsyncAddressDraft = value;
-            this.inputChanged();
-        });
-        this.addRenderableWidget(this.rsyncAddressField);
-        this.rsyncPortField = new EditBox(this.font, portX, this.formY + 12, PORT_WIDTH, 20, label("rsync_port"));
-        this.rsyncPortField.setMaxLength(5);
-        this.rsyncPortField.setFilter(value -> value.matches("[0-9]*"));
-        this.rsyncPortField.setTooltip(Tooltip.create(label("rsync_port_tooltip")));
-        this.rsyncPortField.setValue(this.rsyncPortDraft);
-        this.rsyncPortField.setResponder(value -> {
-            this.rsyncPortDraft = value;
-            this.inputChanged();
-        });
-        this.addRenderableWidget(this.rsyncPortField);
-
         this.playerNameField = new EditBox(this.font, this.formX, this.formY + ROW_HEIGHT + 12,
             this.formWidth, 20, label("player_name"));
         this.playerNameField.setMaxLength(64);
@@ -198,14 +172,14 @@ public final class SharedWorldSettingsScreen extends Screen {
             Button button = this.addRenderableWidget(Button.builder(modeLabel(mode), clicked -> {
                 this.rsyncModeDraft = mode;
                 this.inputChanged();
-            }).bounds(this.formX + index * (modeWidth + GAP), this.formY + ROW_HEIGHT + 12, modeWidth, 20).build());
+            }).bounds(this.formX + index * (modeWidth + GAP), this.formY + 12, modeWidth, 20).build());
             button.setTooltip(Tooltip.create(label("rsync_mode." + mode.name().toLowerCase(Locale.ROOT) + "_tooltip")));
             this.modeButtons.put(mode, button);
         }
 
         // 自定义路径并排占一行，使连接与工具设置在最小窗口中也能完整显示。
         int pathWidth = (this.formWidth - GAP) / 2;
-        this.rsyncPathField = new EditBox(this.font, this.formX, this.formY + ROW_HEIGHT * 2 + 12,
+        this.rsyncPathField = new EditBox(this.font, this.formX, this.formY + ROW_HEIGHT + 12,
             pathWidth, 20, label("rsync_path"));
         this.rsyncPathField.setMaxLength(ClientConnectionSettings.MAX_RSYNC_PATH_LENGTH);
         this.rsyncPathField.setHint(label("executable_path_hint"));
@@ -217,7 +191,7 @@ public final class SharedWorldSettingsScreen extends Screen {
         });
         this.addRenderableWidget(this.rsyncPathField);
 
-        this.sshPathField = new EditBox(this.font, this.formX + pathWidth + GAP, this.formY + ROW_HEIGHT * 2 + 12,
+        this.sshPathField = new EditBox(this.font, this.formX + pathWidth + GAP, this.formY + ROW_HEIGHT + 12,
             this.formWidth - pathWidth - GAP, 20, label("ssh_path"));
         this.sshPathField.setMaxLength(ClientConnectionSettings.MAX_RSYNC_PATH_LENGTH);
         this.sshPathField.setHint(label("executable_path_hint"));
@@ -290,7 +264,7 @@ public final class SharedWorldSettingsScreen extends Screen {
         String domain = this.domainDraft.strip();
         String address = domain.isEmpty() ? "" : this.protocolDraft + "://" + domain;
         return ClientConnectionSettings.fromInput(address, this.portDraft, this.tokenDraft,
-            this.rsyncModeDraft, this.rsyncPathDraft, this.sshPathDraft, this.rsyncAddressDraft, this.rsyncPortDraft);
+            this.rsyncModeDraft, this.rsyncPathDraft, this.sshPathDraft);
     }
 
     private void inputChanged() {
@@ -320,12 +294,6 @@ public final class SharedWorldSettingsScreen extends Screen {
         this.domainField.setEditable(!busy && connection);
         this.portField.setEditable(!busy && connection);
         this.tokenField.setEditable(!busy && connection);
-        this.rsyncAddressField.visible = sync;
-        this.rsyncPortField.visible = sync;
-        this.rsyncAddressField.setEditable(!busy && sync);
-        this.rsyncPortField.setEditable(!busy && sync);
-        this.rsyncAddressField.active = !busy && sync;
-        this.rsyncPortField.active = !busy && sync;
         this.rsyncPathField.visible = custom;
         this.sshPathField.visible = custom;
         this.rsyncPathField.setEditable(!busy && custom);
@@ -375,8 +343,6 @@ public final class SharedWorldSettingsScreen extends Screen {
                 this.protocolButton.setMessage(this.protocolCaption());
                 this.portField.setValue(Integer.toString(settings.serverPort()));
                 this.tokenField.setValue(settings.token());
-                this.rsyncAddressField.setValue(settings.rsyncAddress());
-                this.rsyncPortField.setValue(Integer.toString(settings.rsyncPort()));
                 this.rsyncModeDraft = settings.rsyncMode();
                 this.rsyncPathField.setValue(settings.rsyncPath());
                 this.sshPathField.setValue(settings.sshPath());
@@ -387,7 +353,7 @@ public final class SharedWorldSettingsScreen extends Screen {
             if (client.screen == this) {
                 this.setInitialFocus(switch (this.selectedTab) {
                     case API -> this.domainField;
-                    case SYNC -> this.rsyncAddressField;
+                    case SYNC -> this.modeButtons.get(this.rsyncModeDraft);
                 });
             }
         }));
@@ -475,15 +441,13 @@ public final class SharedWorldSettingsScreen extends Screen {
         graphics.drawCenteredString(this.font, this.title, this.width / 2, 12, TEXT_COLOR);
         graphics.drawCenteredString(this.font, label("subtitle"), this.width / 2, 28, SECONDARY_COLOR);
         if (this.selectedTab == SettingsTab.SYNC) {
-            graphics.drawString(this.font, label("rsync_address"), this.formX, this.formY, TEXT_COLOR);
-            graphics.drawString(this.font, label("rsync_port"), this.formX + this.formWidth - PORT_WIDTH, this.formY, TEXT_COLOR);
             graphics.drawString(this.font, Component.translatable(PREFIX + "rsync_mode", modeLabel(this.rsyncModeDraft)),
-                this.formX, this.formY + ROW_HEIGHT, TEXT_COLOR);
+                this.formX, this.formY, TEXT_COLOR);
             if (this.rsyncModeDraft == RsyncMode.CUSTOM) {
-                graphics.drawString(this.font, label("rsync_path"), this.formX, this.formY + ROW_HEIGHT * 2, TEXT_COLOR);
-                graphics.drawString(this.font, label("ssh_path"), this.sshPathField.getX(), this.formY + ROW_HEIGHT * 2, TEXT_COLOR);
+                graphics.drawString(this.font, label("rsync_path"), this.formX, this.formY + ROW_HEIGHT, TEXT_COLOR);
+                graphics.drawString(this.font, label("ssh_path"), this.sshPathField.getX(), this.formY + ROW_HEIGHT, TEXT_COLOR);
             } else {
-                int descriptionY = this.formY + ROW_HEIGHT * 2;
+                int descriptionY = this.formY + ROW_HEIGHT;
                 Component description = label("rsync_mode." + this.rsyncModeDraft.name().toLowerCase(Locale.ROOT) + "_tooltip");
                 for (var line : this.font.split(description, this.formWidth)) {
                     graphics.drawString(this.font, line, this.formX, descriptionY, SECONDARY_COLOR);

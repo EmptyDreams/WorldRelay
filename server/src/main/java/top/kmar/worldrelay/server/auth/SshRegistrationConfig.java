@@ -1,11 +1,20 @@
 package top.kmar.worldrelay.server.auth;
 
+import top.kmar.worldrelay.sync.RsyncCommand;
+
 import java.nio.file.Path;
 import java.util.Objects;
 
 /** 临时传输使用的公钥文件、传输根目录及 rrsync 可执行文件；构造时不访问文件系统。 */
 public record SshRegistrationConfig(Path authorizedKeysFile, Path transferDirectory, String rrsyncCommand,
-                                    String transferUser, Path hostPublicKeyFile) {
+                                    String transferUser, Path hostPublicKeyFile, String publicHost, int publicPort) {
+
+    public SshRegistrationConfig(
+        Path authorizedKeysFile, Path transferDirectory, String rrsyncCommand,
+        String transferUser, Path hostPublicKeyFile
+    ) {
+        this(authorizedKeysFile, transferDirectory, rrsyncCommand, transferUser, hostPublicKeyFile, "127.0.0.1", 22);
+    }
 
     public SshRegistrationConfig(Path authorizedKeysFile, Path transferDirectory, String rrsyncCommand) {
         this(authorizedKeysFile, transferDirectory, rrsyncCommand, System.getProperty("user.name", ""),
@@ -25,6 +34,8 @@ public record SshRegistrationConfig(Path authorizedKeysFile, Path transferDirect
         }
         rrsyncCommand = rrsyncCommand.strip();
         if (!transferUser.matches("[a-zA-Z_][a-zA-Z0-9_.-]{0,63}")) throw new IllegalArgumentException("Invalid SSH transfer user");
+        publicHost = RsyncCommand.normalizeHost(publicHost);
+        if (publicPort < 1 || publicPort > 65535) throw new IllegalArgumentException("Invalid public SSH port");
     }
 
     public static SshRegistrationConfig defaults(Path usersFile) {

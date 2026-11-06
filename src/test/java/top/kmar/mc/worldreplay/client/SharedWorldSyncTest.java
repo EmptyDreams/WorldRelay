@@ -77,7 +77,7 @@ class SharedWorldSyncTest {
         server.start();
         try {
             var settings = new ClientConnectionSettings("http://127.0.0.1", server.getAddress().getPort(), "token",
-                RsyncMode.CUSTOM, game.resolve("nonexistent-rsync").toString(), game.resolve("nonexistent-ssh").toString(), "127.0.0.1", 22);
+                RsyncMode.CUSTOM, game.resolve("nonexistent-rsync").toString(), game.resolve("nonexistent-ssh").toString());
             var store = new LocalWorldSessionStore(game, settings.serverUri().toString(), "Alice", UUID.randomUUID(), session.worldId());
             SharedWorldSync.upload(game, settings, "Alice", session, store);
             assertEquals(2, queries.get());

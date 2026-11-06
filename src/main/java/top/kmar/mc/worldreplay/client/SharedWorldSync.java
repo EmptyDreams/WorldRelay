@@ -7,9 +7,11 @@ import top.kmar.mc.worldreplay.sync.RsyncTools;
 import top.kmar.mc.worldreplay.sync.RsyncTransfer;
 import top.kmar.worldrelay.snapshot.SnapshotFiles;
 import top.kmar.worldrelay.snapshot.SnapshotManifest;
+import top.kmar.worldrelay.sync.RsyncCommand;
 
 import java.io.IOException;
 import java.nio.file.*;
+import java.util.ArrayList;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
@@ -154,10 +156,22 @@ final class SharedWorldSync {
         Path game, ClientConnectionSettings settings, LocalWorldSessionStore store, Path payload,
         JsonObject ticket, boolean upload
     ) throws IOException {
-        var credentials = new RsyncTransfer.Credentials(ClientJson.requiredString(ticket, "privateKey"),
-            ClientJson.requiredString(ticket, "sshUser"), ClientJson.requiredString(ticket, "hostPublicKey"));
+        RsyncCommand command;
+        try {
+            JsonObject json = ticket.getAsJsonObject("rsyncCommand");
+            var arguments = new ArrayList<String>();
+            for (var argument : json.getAsJsonArray("arguments")) {
+                arguments.add(argument.getAsString());
+            }
+            command = new RsyncCommand(ClientJson.requiredString(json, "host"), json.get("port").getAsBigDecimal().intValueExact(),
+                ClientJson.requiredString(json, "user"), arguments);
+            if (command.upload() != upload) throw new IllegalArgumentException();
+        } catch (RuntimeException failure) {
+            throw new IOException("Invalid rsync command from server");
+        }
+        var credentials = new RsyncTransfer.Credentials(ClientJson.requiredString(ticket, "privateKey"), ClientJson.requiredString(ticket, "hostPublicKey"));
         var result = RsyncTransfer.run(RsyncTools.prepare(game, settings.rsyncMode(), settings.rsyncPath(), settings.sshPath()),
-            settings.rsyncEndpoint(), credentials, payload, store.temporary(), upload);
+            command, credentials, payload, store.temporary());
         WorldRelay.LOGGER.info("World save transfer completed: literalBytes={}, matchedBytes={}", result.literalBytes(), result.matchedBytes());
     }
 

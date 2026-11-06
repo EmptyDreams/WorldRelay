@@ -21,7 +21,8 @@ public final class TransferJobs implements AutoCloseable {
 
     public synchronized String poll(String key, Callable<String> operation) throws Exception {
         long now = System.nanoTime();
-        jobs.entrySet().removeIf(entry -> entry.getValue().future.isDone() && now - entry.getValue().created > TimeUnit.HOURS.toNanos(5));
+        // 传输结果包含有效期一小时的密钥，缓存提前失效，让稍后的重试能够重新签发。
+        jobs.entrySet().removeIf(entry -> entry.getValue().future.isDone() && now - entry.getValue().created > TimeUnit.MINUTES.toNanos(30));
         Job job = jobs.get(key);
         if (job == null) {
             if (jobs.size() >= 128) throw new IOException("Too many transfer jobs");

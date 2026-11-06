@@ -1,9 +1,10 @@
 package top.kmar.mc.worldreplay.sync;
 
+import top.kmar.worldrelay.sync.RsyncCommand;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -20,11 +21,10 @@ public final class RsyncTransfer {
     private RsyncTransfer() {
     }
 
-    public record Credentials(String privateKey, String sshUser, String hostPublicKey) {
+    public record Credentials(String privateKey, String hostPublicKey) {
 
         public Credentials {
-            if (!sshUser.matches("[a-zA-Z_][a-zA-Z0-9_.-]{0,63}")
-                || !hostPublicKey.matches("ssh-ed25519 [A-Za-z0-9+/]+={0,2}")
+            if (!hostPublicKey.matches("ssh-ed25519 [A-Za-z0-9+/]+={0,2}")
                 || privateKey.length() > 8192 || !privateKey.startsWith("-----BEGIN OPENSSH PRIVATE KEY-----\n")
                 || !privateKey.endsWith("-----END OPENSSH PRIVATE KEY-----\n")) throw new IllegalArgumentException("Invalid SSH credentials");
         }
@@ -42,8 +42,8 @@ public final class RsyncTransfer {
     }
 
     public static Result run(
-        BundledRsync.Executables tools, InetSocketAddress endpoint, Credentials credentials,
-        Path payload, Path temporaryRoot, boolean upload
+        BundledRsync.Executables tools, RsyncCommand transfer, Credentials credentials,
+        Path payload, Path temporaryRoot
     ) throws IOException {
         Files.createDirectories(temporaryRoot);
         Path secret = Files.createTempDirectory(temporaryRoot, "ssh-");
@@ -54,8 +54,8 @@ public final class RsyncTransfer {
             Path identity = secret.resolve("identity");
             Path knownHosts = secret.resolve("known_hosts");
             Path config = secret.resolve("config");
-            String host = endpoint.getHostString();
-            String knownHost = endpoint.getPort() == 22 ? host : "[" + host + "]:" + endpoint.getPort();
+            String host = transfer.host();
+            String knownHost = transfer.port() == 22 ? host : "[" + host + "]:" + transfer.port();
             writeSecret(identity, credentials.privateKey, posix);
             writeSecret(knownHosts, knownHost + " " + credentials.hostPublicKey + "\n", posix);
             writeSecret(config, "Host *\n  BatchMode yes\n  IdentitiesOnly yes\n  IdentityAgent none\n"
@@ -63,7 +63,7 @@ public final class RsyncTransfer {
                 + "  UserKnownHostsFile " + configPath(knownHosts) + "\n  IdentityFile " + configPath(identity) + "\n"
                 + "  ConnectTimeout 10\n  ServerAliveInterval 15\n  ServerAliveCountMax 3\n"
                 + "  PasswordAuthentication no\n  KbdInteractiveAuthentication no\n  LogLevel ERROR\n", posix);
-            List<String> command = command(tools, endpoint, credentials.sshUser, config, upload);
+            List<String> command = command(tools, transfer, config);
             ProcessBuilder builder = new ProcessBuilder(command).directory(payload.toFile()).redirectErrorStream(true);
             builder.environment().put("LC_ALL", "C");
             // 不让用户环境中的 rsync 配置覆盖显式选择的 SSH 程序或隐藏参数。
@@ -108,16 +108,15 @@ public final class RsyncTransfer {
         }
     }
 
-    static List<String> command(BundledRsync.Executables tools, InetSocketAddress endpoint, String user, Path config, boolean upload) throws IOException {
+    static List<String> command(BundledRsync.Executables tools, RsyncCommand transfer, Path config) throws IOException {
         String ssh = quote(tools.ssh().toAbsolutePath().toString().replace('\\', '/')) + " -F "
-            + quote(config.toAbsolutePath().toString().replace('\\', '/')) + " -p " + endpoint.getPort();
-        String host = endpoint.getHostString();
-        String remote = user + "@" + (host.contains(":") ? "[" + host + "]" : host) + ":./";
-        List<String> args = new ArrayList<>(List.of(tools.rsync().toAbsolutePath().toString(), "-rt", "--checksum", "--no-whole-file",
-            "--delete-delay", "--partial", "--timeout=60", "--stats", "--exclude=/world/session.lock", "-e", ssh, "--"));
+            + quote(config.toAbsolutePath().toString().replace('\\', '/')) + " -p " + transfer.port();
+        List<String> args = new ArrayList<>();
+        args.add(tools.rsync().toAbsolutePath().toString());
         // 受管工作目录作为 cwd，避免 Windows 的盘符被当成 HOST:PATH。
-        args.add(upload ? "./" : remote);
-        args.add(upload ? remote : "./");
+        for (String argument : transfer.arguments()) {
+            args.add(argument.equals(RsyncCommand.SSH_PLACEHOLDER) ? ssh : argument);
+        }
         return List.copyOf(args);
     }
 

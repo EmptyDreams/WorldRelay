@@ -4,6 +4,7 @@ import top.kmar.worldrelay.server.auth.SshRegistrationConfig;
 import top.kmar.worldrelay.server.auth.UserStore;
 import top.kmar.worldrelay.snapshot.SnapshotFiles;
 import top.kmar.worldrelay.snapshot.SnapshotManifest;
+import top.kmar.worldrelay.sync.RsyncCommand;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -22,7 +23,7 @@ public final class WorldTransfers {
     private final SshRegistrationConfig ssh;
     private final ConcurrentHashMap<String, Object> locks = new ConcurrentHashMap<>();
 
-    public record Ticket(String transferId, String privateKey, String sshUser, String hostPublicKey, String manifestHash) {
+    public record Ticket(String transferId, String privateKey, RsyncCommand rsyncCommand, String hostPublicKey, String manifestHash) {
 
         @Override
         @SuppressWarnings("NullableProblems")
@@ -75,7 +76,8 @@ public final class WorldTransfers {
             if (Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException("Transfer preparation interrupted");
             String keyId = keyId(worldId, owner, uploadId, upload);
             return new Ticket(keyId, users.issueTransferKey(owner.username(), keyId, payload, !upload),
-                ssh.transferUser(), hostKey, source == null ? null : source.manifestHash());
+                RsyncCommand.create(ssh.publicHost(), ssh.publicPort(), ssh.transferUser(), upload), hostKey,
+                source == null ? null : source.manifestHash());
         }
     }
 

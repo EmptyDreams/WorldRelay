@@ -8,7 +8,6 @@ import top.kmar.mc.worldreplay.sync.RsyncMode;
 
 import java.io.IOException;
 import java.net.IDN;
-import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.file.Files;
@@ -19,22 +18,20 @@ import java.util.Locale;
 
 /** 保存客户端连接和工具配置；玩家名始终读取当前账号，不写入配置。 */
 public record ClientConnectionSettings(String serverAddress, int serverPort, String token,
-                                       RsyncMode rsyncMode, String rsyncPath, String sshPath,
-                                       String rsyncAddress, int rsyncPort) {
+                                       RsyncMode rsyncMode, String rsyncPath, String sshPath) {
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     public static final int MAX_TOKEN_LENGTH = 4096;
     public static final int MAX_RSYNC_PATH_LENGTH = 4096;
 
     public static ClientConnectionSettings defaults() {
-        return new ClientConnectionSettings("", 443, "", RsyncMode.defaultMode(), "", "", "", 22);
+        return new ClientConnectionSettings("", 443, "", RsyncMode.defaultMode(), "", "");
     }
 
     /** 接受 HTTP / HTTPS 地址；省略协议时默认 HTTPS，端口单独填写。 */
     public static ClientConnectionSettings fromInput(
         String domainInput, String portInput, String tokenInput,
-        RsyncMode mode, String rsyncPathInput, String sshPathInput,
-        String rsyncAddressInput, String rsyncPortInput
+        RsyncMode mode, String rsyncPathInput, String sshPathInput
     ) {
         String address = domainInput.strip();
         if (address.isEmpty()) {
@@ -69,7 +66,7 @@ public record ClientConnectionSettings(String serverAddress, int serverPort, Str
             throw new ValidationException("domain_invalid");
         }
 
-        int port = validatePort(portInput, "port_invalid");
+        int port = validatePort(portInput);
 
         String token = tokenInput.strip();
         if (token.isEmpty()) {
@@ -79,8 +76,6 @@ public record ClientConnectionSettings(String serverAddress, int serverPort, Str
             || token.codePoints().anyMatch(c -> Character.isWhitespace(c) || Character.isISOControl(c))) {
             throw new ValidationException("token_invalid");
         }
-        String rsyncAddress = validateRsyncAddress(rsyncAddressInput);
-        int rsyncPort = validatePort(rsyncPortInput, "rsync_port_invalid");
         if (mode == null || !RsyncMode.availableModes().contains(mode)) {
             throw new ValidationException("rsync_mode_unavailable");
         }
@@ -90,49 +85,19 @@ public record ClientConnectionSettings(String serverAddress, int serverPort, Str
             rsyncPath = validateToolPath(rsyncPath, "rsync");
             sshPath = validateToolPath(sshPath, "ssh");
         }
-        return new ClientConnectionSettings(protocol + "://" + domain, port, token, mode, rsyncPath, sshPath,
-            rsyncAddress, rsyncPort);
+        return new ClientConnectionSettings(protocol + "://" + domain, port, token, mode, rsyncPath, sshPath);
     }
 
-    private static int validatePort(String input, String reason) {
+    private static int validatePort(String input) {
         String value = input.strip();
         if (!value.matches("[0-9]{1,5}")) {
-            throw new ValidationException(reason);
+            throw new ValidationException("port_invalid");
         }
         int port = Integer.parseInt(value);
         if (port < 1 || port > 65535) {
-            throw new ValidationException(reason);
+            throw new ValidationException("port_invalid");
         }
         return port;
-    }
-
-    /** 只接受远程主机名或 IP；不解析 DNS，也不将 URL、用户名或命令参数混入 SSH 目标。 */
-    private static String validateRsyncAddress(String input) {
-        String host = input.strip();
-        if (host.isEmpty()) {
-            throw new ValidationException("rsync_address_required");
-        }
-        try {
-            if (host.startsWith("[") && host.endsWith("]")) {
-                host = host.substring(1, host.length() - 1);
-            }
-            if (host.contains("[") || host.contains("]") || host.contains("%")) {
-                throw new ValidationException("rsync_address_invalid");
-            }
-            if (!host.contains(":")) {
-                host = IDN.toASCII(host, IDN.USE_STD3_ASCII_RULES);
-                if (host.length() > 253) {
-                    throw new ValidationException("rsync_address_invalid");
-                }
-            }
-            URI uri = new URI("ssh", null, host, -1, null, null, null);
-            if (uri.getHost() == null || uri.getRawUserInfo() != null || uri.getPort() != -1) {
-                throw new ValidationException("rsync_address_invalid");
-            }
-            return host.toLowerCase(Locale.ROOT);
-        } catch (URISyntaxException | IllegalArgumentException e) {
-            throw new ValidationException("rsync_address_invalid");
-        }
     }
 
     private static String validateToolPath(String value, String tool) {
@@ -155,15 +120,8 @@ public record ClientConnectionSettings(String serverAddress, int serverPort, Str
 
     /** 网络层使用用户选择的协议，不自动降级或升级。 */
     public URI serverUri() {
-        var checked = fromInput(serverAddress, Integer.toString(serverPort), token, rsyncMode, rsyncPath, sshPath,
-            rsyncAddress, Integer.toString(rsyncPort));
+        var checked = fromInput(serverAddress, Integer.toString(serverPort), token, rsyncMode, rsyncPath, sshPath);
         return URI.create(checked.serverAddress + ":" + checked.serverPort);
-    }
-
-    /** rsync over SSH 的远程端点独立于 HTTP 接口；保持未解析状态，避免在调用线程进行 DNS 查询。 */
-    public InetSocketAddress rsyncEndpoint() {
-        return InetSocketAddress.createUnresolved(validateRsyncAddress(rsyncAddress),
-            validatePort(Integer.toString(rsyncPort), "rsync_port_invalid"));
     }
 
     public boolean usesHttp() {
@@ -178,8 +136,7 @@ public record ClientConnectionSettings(String serverAddress, int serverPort, Str
             JsonObject json = GSON.fromJson(reader, JsonObject.class);
             return fromInput(json.get("serverAddress").getAsString(), json.get("serverPort").getAsString(),
                 json.get("token").getAsString(), RsyncMode.valueOf(json.get("rsyncMode").getAsString()),
-                json.get("rsyncPath").getAsString(), json.get("sshPath").getAsString(),
-                json.get("rsyncAddress").getAsString(), json.get("rsyncPort").getAsString());
+                json.get("rsyncPath").getAsString(), json.get("sshPath").getAsString());
         } catch (RuntimeException e) {
             // 解析异常可能包含原始配置内容，不将 token 放入异常链或日志。
             throw new IOException("Invalid WorldRelay client settings");
@@ -188,8 +145,7 @@ public record ClientConnectionSettings(String serverAddress, int serverPort, Str
 
     /** 在同目录写完临时文件后原子替换，失败时保留已有配置；调用方应在 IO 线程执行。 */
     public void save(Path file) throws IOException {
-        var checked = fromInput(serverAddress, Integer.toString(serverPort), token, rsyncMode, rsyncPath, sshPath,
-            rsyncAddress, Integer.toString(rsyncPort));
+        var checked = fromInput(serverAddress, Integer.toString(serverPort), token, rsyncMode, rsyncPath, sshPath);
         Path target = file.toAbsolutePath();
         Files.createDirectories(target.getParent());
         Path temporary = Files.createTempFile(target.getParent(), "worldrelay-client-", ".tmp");
@@ -206,8 +162,7 @@ public record ClientConnectionSettings(String serverAddress, int serverPort, Str
     @Override
     public @NotNull String toString() {
         return "ClientConnectionSettings[serverAddress=" + serverAddress + ", serverPort=" + serverPort
-            + ", token=<redacted>, rsyncMode=" + rsyncMode + ", rsyncPath=" + rsyncPath + ", sshPath=" + sshPath
-            + ", rsyncAddress=" + rsyncAddress + ", rsyncPort=" + rsyncPort + "]";
+            + ", token=<redacted>, rsyncMode=" + rsyncMode + ", rsyncPath=" + rsyncPath + ", sshPath=" + sshPath + "]";
     }
 
     public static final class ValidationException extends IllegalArgumentException {

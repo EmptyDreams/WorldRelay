@@ -32,7 +32,7 @@ class WorldOwnershipClientTest {
 
     private ClientConnectionSettings settings(HttpServer server) {
         return new ClientConnectionSettings("http://127.0.0.1", server.getAddress().getPort(), "test-token",
-            RsyncMode.AUTO, "", "", "127.0.0.1", 22);
+            RsyncMode.AUTO, "", "");
     }
 
     private String response() {

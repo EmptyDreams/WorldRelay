@@ -20,7 +20,8 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
         "http.bind-address", "http.port", "http.max-concurrent-requests", "http.shutdown-grace-seconds",
         "registration.port", "auth.users-file", "worlds.directory",
         "ownership.heartbeat-interval-seconds", "ownership.heartbeat-timeout-seconds",
-        "ssh.authorized-keys-file", "ssh.transfer-directory", "ssh.rrsync-command", "ssh.transfer-user", "ssh.host-public-key-file"
+        "ssh.authorized-keys-file", "ssh.transfer-directory", "ssh.rrsync-command", "ssh.transfer-user", "ssh.host-public-key-file",
+        "ssh.public-host", "ssh.public-port"
     );
 
     public ServerConfig {
@@ -128,7 +129,9 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
                 Path.of(properties.getProperty("ssh.transfer-directory", sshDefaults.transferDirectory().toString())),
                 properties.getProperty("ssh.rrsync-command", sshDefaults.rrsyncCommand()),
                 properties.getProperty("ssh.transfer-user", sshDefaults.transferUser()),
-                Path.of(properties.getProperty("ssh.host-public-key-file", sshDefaults.hostPublicKeyFile().toString())))
+                Path.of(properties.getProperty("ssh.host-public-key-file", sshDefaults.hostPublicKeyFile().toString())),
+                properties.getProperty("ssh.public-host", sshDefaults.publicHost()),
+                integer(properties, "ssh.public-port", sshDefaults.publicPort()))
         );
     }
 

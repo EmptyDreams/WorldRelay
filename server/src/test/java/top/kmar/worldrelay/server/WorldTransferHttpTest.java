@@ -32,7 +32,7 @@ class WorldTransferHttpTest {
 
     private ServerConfig config() {
         var ssh = new SshRegistrationConfig(root.resolve("ssh/authorized_keys"), root.resolve("transfers"),
-            root.resolve("rrsync-not-required").toString(), "work", root.resolve("host.pub"));
+            root.resolve("rrsync-not-required").toString(), "work", root.resolve("host.pub"), "files.example", 2222);
         return new ServerConfig("127.0.0.1", 0, 32, 0, 0, root.resolve("users.json"), root.resolve("worlds"), 5, 20, ssh);
     }
 
@@ -70,7 +70,7 @@ class WorldTransferHttpTest {
             String privateKey = field(ticket.body(), "privateKey");
             assertNotNull(privateKey);
             assertTrue(privateKey.startsWith("-----BEGIN OPENSSH PRIVATE KEY-----"));
-            assertEquals("work", field(ticket.body(), "sshUser"));
+            assertEquals(top.kmar.worldrelay.sync.RsyncCommand.create("files.example", 2222, "work", true), transferCommand(ticket.body()));
             Path payload;
             try (var paths = Files.walk(config().ssh().transferDirectory())) {
                 payload = paths.filter(path -> path.getFileName().toString().equals("payload")).findFirst().orElseThrow();
@@ -109,6 +109,39 @@ class WorldTransferHttpTest {
             Thread.sleep(10);
         }
         throw new AssertionError("Snapshot job did not finish");
+    }
+
+    private static top.kmar.worldrelay.sync.RsyncCommand transferCommand(String json) {
+        JsonReader reader = new JsonReader(json);
+        reader.beginObject();
+        while (reader.hasNext()) {
+            if (!reader.nextName().equals("rsyncCommand")) {
+                reader.skipValue();
+                continue;
+            }
+            String host = null, user = null;
+            int port = 0;
+            var arguments = new java.util.ArrayList<String>();
+            reader.beginObject();
+            while (reader.hasNext()) {
+                switch (reader.nextName()) {
+                    case "host" -> host = reader.nextString();
+                    case "user" -> user = reader.nextString();
+                    case "port" -> port = Math.toIntExact(reader.nextLong());
+                    case "arguments" -> {
+                        reader.beginArray();
+                        while (reader.hasNext()) {
+                            arguments.add(reader.nextString());
+                        }
+                        reader.endArray();
+                    }
+                    default -> throw new AssertionError("Unexpected rsync command field");
+                }
+            }
+            reader.endObject();
+            return new top.kmar.worldrelay.sync.RsyncCommand(host, port, user, arguments);
+        }
+        throw new AssertionError("Missing rsync command");
     }
 
     private static String field(String json, String name) {

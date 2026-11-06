@@ -87,8 +87,14 @@ public final class WorldTransferHandler implements HttpHandler {
             var ticket = transfers.begin(command.world, owner, command.base, command.transfer, action == Action.UPLOAD);
             writer.name("worldId").value(command.world).name("epoch").value(command.epoch)
                 .name("uploadId").value(command.transfer).name("transferId").value(ticket.transferId())
-                .name("privateKey").value(ticket.privateKey()).name("sshUser").value(ticket.sshUser())
-                .name("hostPublicKey").value(ticket.hostPublicKey()).name("manifestHash");
+                .name("privateKey").value(ticket.privateKey()).name("hostPublicKey").value(ticket.hostPublicKey())
+                .name("rsyncCommand").beginObject().name("host").value(ticket.rsyncCommand().host())
+                .name("port").value(ticket.rsyncCommand().port()).name("user").value(ticket.rsyncCommand().user())
+                .name("arguments").beginArray();
+            for (String argument : ticket.rsyncCommand().arguments()) {
+                writer.value(argument);
+            }
+            writer.endArray().endObject().name("manifestHash");
             if (ticket.manifestHash() == null) writer.nullValue();
             else writer.value(ticket.manifestHash());
         }
