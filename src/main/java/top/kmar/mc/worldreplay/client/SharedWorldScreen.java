@@ -21,6 +21,8 @@ import org.jetbrains.annotations.NotNull;
 import javax.annotation.Nullable;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -99,9 +101,7 @@ public final class SharedWorldScreen extends Screen {
                     .map(world -> new ListedWorld(world.worldId(), Component.literal(world.name()),
                         WorldStatus.valueOf(world.status()), world.hostName(),
                         world.playerCount() == null ? -1 : world.playerCount(),
-                        world.lastCommittedAt() == null
-                            ? Component.translatable(TRANSLATION_PREFIX + "never_committed")
-                            : Component.literal(world.lastCommittedAt()))).toList();
+                        world.lastCommittedAt() == null ? null : Instant.parse(world.lastCommittedAt()))).toList();
             } catch (IOException e) {
                 throw new CompletionException(e);
             }
@@ -166,6 +166,12 @@ public final class SharedWorldScreen extends Screen {
             this.listRefreshPending = false;
             this.refreshWorldList(client);
         }
+    }
+
+    @Override
+    public void tick() {
+        super.tick();
+        this.detailsPanel.refreshTime();
     }
 
     @Override
@@ -239,7 +245,7 @@ public final class SharedWorldScreen extends Screen {
     }
 
     /** 只描述本页展示需要的数据，不代表已经实现协调服务或游戏连接。 */
-    private record ListedWorld(String worldId, Component name, WorldStatus status, @Nullable String host, int players, Component lastSync) {
+    private record ListedWorld(String worldId, Component name, WorldStatus status, @Nullable String host, int players, @Nullable Instant lastSync) {
 
         Component hostName() {
             return host == null ? Component.translatable(TRANSLATION_PREFIX + "no_host") : Component.literal(host);
@@ -408,6 +414,8 @@ public final class SharedWorldScreen extends Screen {
 
         private final List<DetailLine> lines = new ArrayList<>();
         private int contentHeight;
+        private Component lastSyncText = CommonComponents.EMPTY;
+        private long nextTimeRefresh;
 
         DetailsPanel(int x, int y, int width, int height) {
             super(x, y, width, height, Component.translatable(TRANSLATION_PREFIX + "details_title"));
@@ -415,13 +423,28 @@ public final class SharedWorldScreen extends Screen {
 
         void show(ListedWorld world) {
             this.lines.clear();
+            this.lastSyncText = WorldSyncTime.format(world.lastSync(), Instant.now(), ZoneId.systemDefault());
             int y = addParagraph(world.name(), TEXT_COLOR, PADDING, 2);
             y = addParagraph(world.status().label(), world.status().color, y, 6);
             y = addParagraph(Component.translatable(TRANSLATION_PREFIX + "host", world.hostName()), SECONDARY_TEXT_COLOR, y, 2);
             y = addParagraph(Component.translatable(TRANSLATION_PREFIX + "players", world.playerCount()), SECONDARY_TEXT_COLOR, y, 2);
-            y = addParagraph(Component.translatable(TRANSLATION_PREFIX + "last_sync", world.lastSync()), SECONDARY_TEXT_COLOR, y, 6);
+            y = addParagraph(Component.translatable(TRANSLATION_PREFIX + "last_sync", this.lastSyncText), SECONDARY_TEXT_COLOR, y, 6);
             this.contentHeight = addParagraph(world.status().description(), TEXT_COLOR, y, PADDING);
             this.setScrollAmount(0);
+        }
+
+        /** 每秒更新一次相对时间；文字变化时保留详情的滚动位置。 */
+        void refreshTime() {
+            long now = Util.getMillis();
+            if (selectedWorld == null || now < this.nextTimeRefresh) {
+                return;
+            }
+            this.nextTimeRefresh = now + 1_000;
+            if (!this.lastSyncText.equals(WorldSyncTime.format(selectedWorld.lastSync(), Instant.now(), ZoneId.systemDefault()))) {
+                double scroll = this.scrollAmount();
+                this.show(selectedWorld);
+                this.setScrollAmount(scroll);
+            }
         }
 
         private int addParagraph(Component text, int color, int y, int spacing) {
