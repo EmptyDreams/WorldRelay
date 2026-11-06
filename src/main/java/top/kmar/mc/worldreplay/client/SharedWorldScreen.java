@@ -58,6 +58,7 @@ public final class SharedWorldScreen extends Screen {
     private boolean usesHttp;
     private int listRequestGeneration;
     private boolean listRefreshPending;
+    private boolean listLoading;
 
     public SharedWorldScreen(Screen parent) {
         super(Component.translatable("worldrelay.menu.shared_worlds"));
@@ -72,6 +73,10 @@ public final class SharedWorldScreen extends Screen {
     }
 
     private void refreshWorldList(@NotNull Minecraft client) {
+        if (this.listLoading) {
+            return;
+        }
+        this.listLoading = true;
         int generation = ++this.listRequestGeneration;
         Path file = client.gameDirectory.toPath().resolve("config/worldrelay-client.json");
         String playerName = client.getUser().getName();
@@ -104,6 +109,7 @@ public final class SharedWorldScreen extends Screen {
             if (generation != this.listRequestGeneration || client.screen != this) {
                 return;
             }
+            this.listLoading = false;
             this.loadFailed = error != null;
             this.worlds = error == null ? loaded : List.of();
             this.selectedWorld = this.worlds.isEmpty() ? null : this.worlds.getFirst();
@@ -115,6 +121,7 @@ public final class SharedWorldScreen extends Screen {
     @Override
     public void removed() {
         ++this.listRequestGeneration;
+        this.listLoading = false;
         super.removed();
     }
 
@@ -131,21 +138,26 @@ public final class SharedWorldScreen extends Screen {
         // 详情滚动条绘制在控件右侧，额外预留其占用的宽度。
         int detailsWidth = this.width - MARGIN - detailsX - 8;
         int buttonGap = 6;
-        int buttonWidth = (listWidth - buttonGap) / 2;
+        int buttonWidth = (listWidth - buttonGap * 2) / 3;
 
         this.detailsPanel = new DetailsPanel(detailsX, contentTop, detailsWidth, detailsHeight);
         this.worldList = new WorldList(MARGIN, contentTop, listWidth, contentHeight);
 
         this.addRenderableWidget(worldList);
         this.addRenderableWidget(this.detailsPanel);
-        // 两个按钮及中间间距的总宽度与左侧列表一致，右侧留给详情。
+        // 三个按钮及中间间距的总宽度与左侧列表一致，右侧留给详情。
         int settingsX = MARGIN;
         this.addRenderableWidget(Button.builder(Component.translatable(TRANSLATION_PREFIX + "settings"),
                 button -> client.setScreen(new SharedWorldSettingsScreen(this)))
             .bounds(settingsX, buttonY, buttonWidth, Button.DEFAULT_HEIGHT).build());
-        int backX = settingsX + buttonWidth + buttonGap;
+        int refreshX = settingsX + buttonWidth + buttonGap;
+        var refreshButton = this.addRenderableWidget(Button.builder(Component.translatable(TRANSLATION_PREFIX + "refresh"),
+                button -> this.refreshWorldList(client))
+            .bounds(refreshX, buttonY, buttonWidth, Button.DEFAULT_HEIGHT).build());
+        refreshButton.active = !this.listLoading;
+        int backX = refreshX + buttonWidth + buttonGap;
         this.addRenderableWidget(Button.builder(CommonComponents.GUI_BACK, button -> this.onClose())
-            .bounds(backX, buttonY, listWidth - buttonWidth - buttonGap, Button.DEFAULT_HEIGHT).build());
+            .bounds(backX, buttonY, listWidth - (buttonWidth + buttonGap) * 2, Button.DEFAULT_HEIGHT).build());
 
         worldList.children().stream().filter(entry -> entry.world.equals(this.selectedWorld)).findFirst()
             .ifPresent(worldList::setSelected);
