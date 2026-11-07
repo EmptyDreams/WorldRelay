@@ -47,6 +47,10 @@ config="worldrelay.ipn.mixins.json"
 requiredMods=["inventoryprofilesnext"]
 
 [[mixins]]
+config="worldrelay.jei.mixins.json"
+requiredMods=["jei"]
+
+[[mixins]]
 config="worldrelay.xaero-worldmap.mixins.json"
 requiredMods=["xaeroworldmap"]
 

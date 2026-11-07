@@ -5,6 +5,7 @@ import net.minecraft.client.gui.screens.ConfirmScreen;
 import net.minecraft.client.gui.screens.ConnectScreen;
 import net.minecraft.client.gui.screens.DisconnectedScreen;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.resolver.ResolvedServerAddress;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
@@ -71,6 +72,16 @@ public final class SharedWorldConnection implements AutoCloseable {
 
     public static boolean managedHost(String host) {
         return host.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.localhost");
+    }
+
+    /** 为客户端兼容提供当前实际连接的共享世界身份，房主使用匹配的内置服务器会话。 */
+    public static @org.jetbrains.annotations.Nullable String worldId(ClientPacketListener listener) {
+        if (listener == null) return null;
+        if (listener.getConnection().isMemoryConnection()) {
+            var server = Minecraft.getInstance().getSingleplayerServer();
+            return server == null ? null : SharedWorldCreation.worldId(server);
+        }
+        return worldId(listener.getConnection(), listener.getServerData());
     }
 
     /** 登录事件之前也可识别访客；必须同时匹配本次连接、逻辑域名和实际转发入口。 */

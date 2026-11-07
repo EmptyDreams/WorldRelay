@@ -1,10 +1,8 @@
 package top.kmar.mc.worldreplay.compat.xaero;
 
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientPacketListener;
 import org.jetbrains.annotations.Nullable;
 import top.kmar.mc.worldreplay.client.SharedWorldConnection;
-import top.kmar.mc.worldreplay.client.SharedWorldCreation;
 
 import java.util.UUID;
 
@@ -23,14 +21,7 @@ public record XaeroMapIdentity(String worldId) {
     }
 
     public static @Nullable XaeroMapIdentity capture(ClientPacketListener listener) {
-        if (listener == null) return null;
-        String world;
-        if (listener.getConnection().isMemoryConnection()) {
-            var server = Minecraft.getInstance().getSingleplayerServer();
-            world = server == null ? null : SharedWorldCreation.worldId(server);
-        } else {
-            world = SharedWorldConnection.worldId(listener.getConnection(), listener.getServerData());
-        }
+        String world = SharedWorldConnection.worldId(listener);
         return world == null ? null : new XaeroMapIdentity(world);
     }
 

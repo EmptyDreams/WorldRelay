@@ -180,7 +180,8 @@ dependencies {
 // 可选模组的发布类测试单独启用；普通回归保持未安装这些模组的环境。
 def createTests = providers.gradleProperty('createTests').getOrElse('false').toBoolean()
 def ipnTestMods = providers.gradleProperty('ipnTestMods')
-if (createTests || ipnTestMods.isPresent()) {
+def jeiTestMods = providers.gradleProperty('jeiTestMods')
+if (createTests || ipnTestMods.isPresent() || jeiTestMods.isPresent()) {
     def fixtureAgent = configurations.create('fixtureAgent')
     dependencies {
         testImplementation 'org.mockito:mockito-core:5.24.0'
@@ -217,6 +218,22 @@ if (ipnTestMods.isPresent()) {
     tasks.named('prepareNeoForgeTestFiles').configure {
         // forgejunitdev 使用 SERVER 侧，在无画面测试中装配相同的客户端注入。
         programArguments.addAll('--mixin', 'worldrelay.ipn-test.mixins.json')
+    }
+}
+
+if (jeiTestMods.isPresent()) {
+    def jeiMods = fileTree(jeiTestMods.get()) {
+        include '*jei-1.21.1-neoforge-19.64.0.455.jar'
+        include '*mezz_config-1.21.1-neoforge-0.6.9-standalone.jar'
+    }
+    if (jeiMods.files.size() != 2) {
+        throw new GradleException('jeiTestMods must contain JEI 19.64.0.455 and mezz_config 0.6.9 (Minecraft 1.21.1 / NeoForge)')
+    }
+    sourceSets.test.java.srcDir('src/jeiTest/java')
+    sourceSets.test.resources.srcDir('src/jeiTest/resources')
+    dependencies { testImplementation(jeiMods) }
+    tasks.named('prepareNeoForgeTestFiles').configure {
+        programArguments.addAll('--mixin', 'worldrelay.jei-test.mixins.json')
     }
 }
 
