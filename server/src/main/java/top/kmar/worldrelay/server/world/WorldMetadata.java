@@ -9,7 +9,7 @@ import top.kmar.worldrelay.server.protocol.HostEndpoint;
 import java.time.Instant;
 import java.util.*;
 
-/** 取消审计、提交回执和所有权一同原子发布，保留 v1/v2/v3 读取兼容。 */
+/** 取消审计、带时间的提交回执和所有权一同原子发布，保留 v1/v2/v3/v4 读取兼容。 */
 record WorldMetadata(String worldId, String name, String createdAt, State state, List<Cancellation> cancellations, List<Commit> commits) {
 
     WorldMetadata(String worldId, String name, String createdAt, State state, List<Cancellation> cancellations) {
@@ -20,7 +20,11 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
         this(worldId, name, createdAt, state, List.of());
     }
 
-    record Commit(String uploadId, Owner owner, long epoch, Long baseVersion, long version, String manifestHash) {
+    record Commit(String uploadId, Owner owner, long epoch, Long baseVersion, long version, String manifestHash, String committedAt) {
+
+        Commit(String uploadId, Owner owner, long epoch, Long baseVersion, long version, String manifestHash) {
+            this(uploadId, owner, epoch, baseVersion, version, manifestHash, null);
+        }
 
         Commit {
             WorldStore.validateId(uploadId);
@@ -28,6 +32,11 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
             if (epoch < 1 || version < 1 || (baseVersion != null && baseVersion < 1)
                 || version != (baseVersion == null ? 1 : Math.addExact(baseVersion, 1))
                 || !manifestHash.matches("[0-9a-f]{64}")) throw new IllegalArgumentException("Invalid commit receipt");
+            if (committedAt != null) {
+                // 只验证时间格式，保留回执中的原始字符串。
+                //noinspection ResultOfMethodCallIgnored
+                Instant.parse(committedAt);
+            }
         }
 
         boolean matches(WorldStore.Identity identity) {
@@ -127,7 +136,12 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
     }
 
     String toJson() {
-        JsonWriter writer = new JsonWriter().beginObject().name("formatVersion").value(!commits.isEmpty() ? 4 : cancellations.isEmpty() ? 2 : 3)
+        int format = 2;
+        if (!cancellations.isEmpty()) format = 3;
+        if (!commits.isEmpty()) format = 4;
+        if (commits.stream().anyMatch(commit -> commit.committedAt != null)) format = 5;
+        JsonWriter writer = new JsonWriter().beginObject().name("formatVersion")
+            .value(format)
             .name("worldId").value(worldId).name("name").value(name).name("createdAt").value(createdAt)
             .name("state").beginObject().name("epoch").value(state.epoch)
             .name("phase").value(state.phase.name()).name("owner");
@@ -168,7 +182,9 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
                     .name("epoch").value(commit.epoch).name("baseVersion");
                 if (commit.baseVersion == null) writer.nullValue();
                 else writer.value(commit.baseVersion);
-                writer.name("version").value(commit.version).name("manifestHash").value(commit.manifestHash).endObject();
+                writer.name("version").value(commit.version).name("manifestHash").value(commit.manifestHash);
+                if (commit.committedAt != null) writer.name("committedAt").value(commit.committedAt);
+                writer.endObject();
             }
             writer.endArray();
         }
@@ -220,7 +236,7 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
         } else if (format == 3) {
             requireFields(fields, Set.of("formatVersion", "worldId", "name", "createdAt", "state", "cancellations"));
             if (cancellations.isEmpty()) throw new IllegalArgumentException("Missing cancellation history");
-        } else if (format == 4) {
+        } else if (format == 4 || format == 5) {
             requireFields(fields, Set.of("formatVersion", "worldId", "name", "createdAt", "state", "cancellations", "commits"));
             if (commits.isEmpty()) throw new IllegalArgumentException("Missing commit history");
         } else throw new IllegalArgumentException("Unsupported world metadata version");
@@ -229,7 +245,7 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
 
     private static Commit readCommit(JsonReader reader) {
         Set<String> fields = new HashSet<>();
-        String id = null, hash = null;
+        String id = null, hash = null, at = null;
         Owner owner = null;
         long epoch = 0, version = 0;
         Long base = null;
@@ -244,12 +260,14 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
                 case "baseVersion" -> base = nullableLong(reader);
                 case "version" -> version = reader.nextLong();
                 case "manifestHash" -> hash = reader.nextString();
+                case "committedAt" -> at = reader.nextString();
                 default -> throw new IllegalArgumentException("Unknown commit field");
             }
         }
         reader.endObject();
-        requireFields(fields, Set.of("uploadId", "owner", "epoch", "baseVersion", "version", "manifestHash"));
-        return new Commit(id, owner, epoch, base, version, hash);
+        requireFields(fields, at == null ? Set.of("uploadId", "owner", "epoch", "baseVersion", "version", "manifestHash")
+            : Set.of("uploadId", "owner", "epoch", "baseVersion", "version", "manifestHash", "committedAt"));
+        return new Commit(id, owner, epoch, base, version, hash, at);
     }
 
     private static Cancellation readCancellation(JsonReader reader) {

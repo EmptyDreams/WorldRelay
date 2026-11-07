@@ -2,6 +2,7 @@ package top.kmar.worldrelay.server;
 
 import top.kmar.worldrelay.server.auth.SshRegistrationConfig;
 import top.kmar.worldrelay.server.tunnel.TunnelConfig;
+import top.kmar.worldrelay.server.world.RetentionConfig;
 
 import java.io.IOException;
 import java.io.Reader;
@@ -15,7 +16,8 @@ import java.util.Set;
 /** HTTP 服务配置；类初始化期间不读取文件或部署环境配置。 */
 public record ServerConfig(String bindAddress, int port, int maxConcurrentRequests, int shutdownGraceSeconds,
                            int registrationPort, Path usersFile, Path worldsDirectory,
-                           int heartbeatIntervalSeconds, int heartbeatTimeoutSeconds, SshRegistrationConfig ssh, TunnelConfig tunnel) {
+                           int heartbeatIntervalSeconds, int heartbeatTimeoutSeconds, SshRegistrationConfig ssh, TunnelConfig tunnel,
+                           RetentionConfig retention) {
 
     private static final Set<String> KEYS = Set.of(
         "http.bind-address", "http.port", "http.max-concurrent-requests", "http.shutdown-grace-seconds",
@@ -23,7 +25,9 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
         "ownership.heartbeat-interval-seconds", "ownership.heartbeat-timeout-seconds",
         "ssh.authorized-keys-file", "ssh.transfer-directory", "ssh.rrsync-command", "ssh.transfer-user", "ssh.host-public-key-file",
         "ssh.public-host", "ssh.public-port", "tunnel.mode", "tunnel.bind-address", "tunnel.port",
-        "tunnel.public-host", "tunnel.public-port", "tunnel.tls-directory"
+        "tunnel.public-host", "tunnel.public-port", "tunnel.tls-directory",
+        "retention.recent-versions", "retention.daily-backup-days", "retention.temporary-hours",
+        "retention.minimum-free-bytes", "retention.sweep-interval-minutes", "retention.time-zone"
     );
 
     public ServerConfig {
@@ -60,8 +64,18 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
         }
         Objects.requireNonNull(ssh, "ssh");
         Objects.requireNonNull(tunnel, "tunnel");
+        Objects.requireNonNull(retention, "retention");
         if (tunnel.port() != 0 && (tunnel.port() == port || tunnel.port() == registrationPort))
             throw new IllegalArgumentException("Tunnel port must differ from HTTP ports");
+    }
+
+    public ServerConfig(
+        String bindAddress, int port, int maxConcurrentRequests, int shutdownGraceSeconds,
+        int registrationPort, Path usersFile, Path worldsDirectory, int heartbeatIntervalSeconds,
+        int heartbeatTimeoutSeconds, SshRegistrationConfig ssh, TunnelConfig tunnel
+    ) {
+        this(bindAddress, port, maxConcurrentRequests, shutdownGraceSeconds, registrationPort, usersFile, worldsDirectory,
+            heartbeatIntervalSeconds, heartbeatTimeoutSeconds, ssh, tunnel, RetentionConfig.defaults());
     }
 
     public ServerConfig(
@@ -146,7 +160,8 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
                 Path.of(properties.getProperty("ssh.host-public-key-file", sshDefaults.hostPublicKeyFile().toString())),
                 properties.getProperty("ssh.public-host", sshDefaults.publicHost()),
                 integer(properties, "ssh.public-port", sshDefaults.publicPort())),
-            TunnelConfig.load(properties, usersFile, integer(properties, "http.port", defaults.port()))
+            TunnelConfig.load(properties, usersFile, integer(properties, "http.port", defaults.port())),
+            RetentionConfig.load(properties)
         );
     }
 

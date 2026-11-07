@@ -14,6 +14,34 @@ class ServerConfigTest {
     @TempDir
     Path directory;
 
+    /** 保留策略有可用默认值，配置可覆盖数量、时区和空间阈值，非法策略不能启动。 */
+    @Test
+    void loadsRetentionPolicyAndRejectsInvalidLimits() throws Exception {
+        var defaults = ServerConfig.defaults().retention();
+        assertEquals(5, defaults.recentVersions());
+        assertEquals(7, defaults.dailyBackupDays());
+        assertEquals(24, defaults.temporaryHours());
+        assertEquals(1073741824L, defaults.minimumFreeBytes());
+        Path file = directory.resolve("retention.properties");
+        Files.writeString(file, """
+            retention.recent-versions=3
+            retention.daily-backup-days=14
+            retention.temporary-hours=48
+            retention.minimum-free-bytes=2147483648
+            retention.sweep-interval-minutes=15
+            retention.time-zone=Asia/Shanghai
+            """);
+        var loaded = ServerConfig.load(file).retention();
+        assertEquals(new top.kmar.worldrelay.server.world.RetentionConfig(3, 14, 48, 2147483648L, 15,
+            java.time.ZoneId.of("Asia/Shanghai")), loaded);
+        for (String invalid : new String[]{"retention.recent-versions=0", "retention.daily-backup-days=-1",
+            "retention.temporary-hours=0", "retention.minimum-free-bytes=-1", "retention.sweep-interval-minutes=0",
+            "retention.time-zone=invalid", "retention.recent-versions=NaN"}) {
+            Files.writeString(file, invalid);
+            assertThrows(IllegalArgumentException.class, () -> ServerConfig.load(file));
+        }
+    }
+
     /** 验证配置文件选择唯一入口：WSS 仅监听回环，TCP 接受 IP 或域名并使用独立 TLS 目录。 */
     @Test
     void selectsTunnelModeAndAdvertisesConfiguredTcpEndpoint() throws Exception {

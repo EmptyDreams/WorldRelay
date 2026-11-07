@@ -4,6 +4,7 @@ import top.kmar.worldrelay.server.auth.SshRegistrationConfig;
 import top.kmar.worldrelay.server.auth.UserStore;
 import top.kmar.worldrelay.server.http.*;
 import top.kmar.worldrelay.server.tunnel.TunnelGateway;
+import top.kmar.worldrelay.server.world.WorldRetention;
 import top.kmar.worldrelay.server.world.WorldStore;
 import top.kmar.worldrelay.server.world.WorldTransfers;
 
@@ -21,6 +22,7 @@ public final class WorldRelayService implements AutoCloseable {
     private WorldRelayHttpServer api;
     private WorldRelayHttpServer registration;
     private TransferJobs transferJobs;
+    private WorldRetention retention;
     private TunnelGateway tunnels;
     private final UserStoreFactory userStoreFactory;
     private boolean closed;
@@ -59,7 +61,8 @@ public final class WorldRelayService implements AutoCloseable {
             tunnels.start();
             HttpRouter apiRouter = WorldRelayServer.createRouter(worlds, tunnels);
             apiRouter.register("POST", "/api/v1/worlds/tunnel-ticket", new TunnelTicketHandler(tunnels));
-            var transfers = new WorldTransfers(worlds, users, config.ssh());
+            retention = new WorldRetention(worlds, config.ssh().transferDirectory(), config.retention());
+            var transfers = new WorldTransfers(worlds, users, config.ssh(), retention);
             transferJobs = new TransferJobs();
             for (WorldTransferHandler.Action action : WorldTransferHandler.Action.values()) {
                 apiRouter.register("POST", "/api/v1/worlds/" + action.name().toLowerCase(java.util.Locale.ROOT).replace('_', '-'),
@@ -69,6 +72,7 @@ public final class WorldRelayService implements AutoCloseable {
                 config.maxConcurrentRequests(), config.shutdownGraceSeconds(), apiRouter,
                 next -> new BasicAuthenticationHandler(users, next));
             api.start();
+            retention.start();
         } catch (IOException | RuntimeException | Error failure) {
             try {
                 close();
@@ -120,6 +124,7 @@ public final class WorldRelayService implements AutoCloseable {
                     if (worlds != null) {
                         if (tunnels != null) tunnels.close();
                         if (transferJobs != null) transferJobs.close();
+                        if (retention != null) retention.close();
                         worlds.close();
                     }
                 } finally {

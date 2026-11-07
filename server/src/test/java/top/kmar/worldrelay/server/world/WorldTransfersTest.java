@@ -80,6 +80,36 @@ class WorldTransfersTest {
         Files.writeString(world.resolve("unknown-mod/train.dat"), "train-one");
     }
 
+    /** 复制前空间不足保留所有权和暂存数据，补足空间后可用同一上传身份重试完成提交。 */
+    @Test
+    void retriesUploadAfterStorageBecomesAvailable() throws Exception {
+        var available = new java.util.concurrent.atomic.AtomicLong(0);
+        try (var users = users(); var worlds = WorldStore.open(root.resolve("worlds"));
+             var retention = new WorldRetention(worlds, ssh().transferDirectory(),
+                 new RetentionConfig(5, 7, 24, 1, 60, java.time.ZoneOffset.UTC),
+                 java.time.Clock.systemUTC(), ignored -> available.get())) {
+            var transfers = new WorldTransfers(worlds, users, ssh(), retention);
+            String world = create(worlds), upload = id();
+            var owner = acquire(worlds, world, "Alice");
+            worlds.stop(world, owner, BEGIN, null);
+            assertEquals("INSUFFICIENT_STORAGE", assertThrows(WorldAccessException.class,
+                () -> transfers.begin(world, owner, null, upload, true)).code());
+            available.set(Long.MAX_VALUE);
+            transfers.begin(world, owner, null, upload, true);
+            Path payload = payload(world, owner, upload);
+            firstSave(payload);
+            String hash = manifest(payload);
+            available.set(0);
+            assertEquals("INSUFFICIENT_STORAGE", assertThrows(WorldAccessException.class,
+                () -> transfers.commit(world, owner, null, upload, hash)).code());
+            assertEquals("COMMITTING", worlds.heartbeat(world, owner, null).status());
+            assertEquals("train-one", Files.readString(payload.resolve("world/unknown-mod/train.dat")));
+            available.set(Long.MAX_VALUE);
+            assertEquals(1, transfers.commit(world, owner, null, upload, hash));
+            assertEquals("FREE", worlds.list().getFirst().status());
+        }
+    }
+
     /** 验证交接使用旧版本作为增量基础，保留历史快照并支持提交幂等重试。 */
     @Test
     void fullHandoverSeedsOldDataPreservesHistoryAndRetriesLostCommitResponse() throws Exception {

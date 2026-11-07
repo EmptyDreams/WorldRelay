@@ -13,6 +13,7 @@ import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
+import java.time.Clock;
 import java.time.DateTimeException;
 import java.time.Instant;
 import java.util.*;
@@ -64,6 +65,7 @@ public final class WorldStore implements AutoCloseable {
     private final int heartbeatIntervalSeconds;
     private final int heartbeatTimeoutSeconds;
     private final long heartbeatTimeoutNanos;
+    private final Clock clock;
     private final Map<String, Entry> worlds = new TreeMap<>();
     private final Set<String> names = new HashSet<>();
     private boolean closed;
@@ -105,7 +107,7 @@ public final class WorldStore implements AutoCloseable {
     private WorldStore(
         Path root, FileChannel channel, FileLock fileLock, DirectoryPublisher publisher,
         Supplier<UUID> idGenerator, DirectoryPublisher metadataPublisher, LongSupplier ticker,
-        int interval, int timeout
+        int interval, int timeout, Clock clock
     ) {
         this.root = root;
         this.lockChannel = channel;
@@ -117,6 +119,7 @@ public final class WorldStore implements AutoCloseable {
         this.heartbeatIntervalSeconds = interval;
         this.heartbeatTimeoutSeconds = timeout;
         this.heartbeatTimeoutNanos = timeout * 1_000_000_000L;
+        this.clock = Objects.requireNonNull(clock);
     }
 
     public static WorldStore open(Path directory) throws IOException {
@@ -141,6 +144,13 @@ public final class WorldStore implements AutoCloseable {
         Path directory, DirectoryPublisher publisher, Supplier<UUID> idGenerator,
         DirectoryPublisher metadataPublisher, LongSupplier ticker, int interval, int timeout
     ) throws IOException {
+        return open(directory, publisher, idGenerator, metadataPublisher, ticker, interval, timeout, Clock.systemUTC());
+    }
+
+    static WorldStore open(
+        Path directory, DirectoryPublisher publisher, Supplier<UUID> idGenerator,
+        DirectoryPublisher metadataPublisher, LongSupplier ticker, int interval, int timeout, Clock clock
+    ) throws IOException {
         if (interval < 1 || timeout <= interval) throw new IllegalArgumentException("Invalid heartbeat timing");
         Objects.requireNonNull(ticker);
         Files.createDirectories(directory.toAbsolutePath().normalize());
@@ -158,7 +168,7 @@ public final class WorldStore implements AutoCloseable {
             }
             if (lock == null) throw new IOException("World store is already in use");
             WorldStore store = new WorldStore(root, channel, lock, publisher, idGenerator, metadataPublisher,
-                ticker, interval, timeout);
+                ticker, interval, timeout, clock);
             store.load();
             return store;
         } catch (IOException | RuntimeException | Error failure) {
@@ -378,6 +388,55 @@ public final class WorldStore implements AutoCloseable {
         return Files.createTempDirectory(root.resolve(worldId), ".candidate-");
     }
 
+    record RetentionWorld(WorldMetadata metadata, boolean unavailable) {
+
+    }
+
+    synchronized List<RetentionWorld> retentionWorlds() {
+        ensureOpen();
+        return worlds.values().stream().map(entry -> new RetentionWorld(entry.metadata, entry.unavailable)).toList();
+    }
+
+    Path directory() {
+        return root;
+    }
+
+    /** 在元数据锁内重新判断，避免清理与发布或不确定写盘结果交错。提交回执始终保留。 */
+    synchronized Path retireSnapshot(String worldId, String uploadId) throws IOException {
+        ensureOpen();
+        Entry entry = worlds.get(worldId);
+        if (entry == null || entry.unavailable) return null;
+        var commits = entry.metadata.commits();
+        if (commits.isEmpty() || commits.getLast().uploadId().equals(uploadId)
+            || commits.stream().noneMatch(commit -> commit.uploadId().equals(uploadId))) return null;
+        Path snapshots = root.resolve(worldId).resolve("snapshots");
+        requireLocalPath(snapshots, true);
+        return retire(snapshots.resolve(uploadId));
+    }
+
+    synchronized Path retireTemporary(String worldId, Long epoch, Path path, boolean preserveOwned) throws IOException {
+        ensureOpen();
+        if (worldId != null) {
+            Entry entry = worlds.get(worldId);
+            if (entry == null || entry.unavailable) return null;
+            var state = entry.metadata.state();
+            // 未上传工作副本仍属有效任期时，离线或超过 TTL 也不能破坏恢复能力。
+            if (preserveOwned && state.owner() != null && (epoch == null || epoch == state.epoch())) return null;
+            if (path.getParent().equals(root.resolve(worldId).resolve("snapshots"))
+                && entry.metadata.commits().stream().anyMatch(commit -> commit.uploadId().equals(path.getFileName().toString()))) return null;
+        }
+        return retire(path);
+    }
+
+    private static Path retire(Path path) throws IOException {
+        if (Files.notExists(path, LinkOption.NOFOLLOW_LINKS)) return null;
+        requireLocalPath(path, Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS));
+        Path trash = path.resolveSibling(".retention-trash-" + UUID.randomUUID());
+        Files.move(path, trash, StandardCopyOption.ATOMIC_MOVE);
+        SnapshotFiles.forceDirectory(path.getParent());
+        return trash;
+    }
+
     /** candidate 由协调服务私有持有，SSH 从未获得此路径；最终元数据原子发布同时释放所有权。 */
     public synchronized long publishSnapshot(
         String worldId, Identity identity, Long baseVersion,
@@ -391,8 +450,9 @@ public final class WorldStore implements AutoCloseable {
         if (state.phase() != WorldPhase.COMMITTING) throw conflict("INVALID_PHASE", "Upload has not begun");
         long version = baseVersion == null ? 1 : Math.addExact(baseVersion, 1);
         var commits = new ArrayList<>(entry.metadata.commits());
-        commits.add(new WorldMetadata.Commit(uploadId, state.owner(), state.epoch(), baseVersion, version, hash));
-        var free = new WorldMetadata.State(state.epoch(), WorldPhase.FREE, null, null, version, Instant.now().toString(), null);
+        String committedAt = clock.instant().toString();
+        commits.add(new WorldMetadata.Commit(uploadId, state.owner(), state.epoch(), baseVersion, version, hash, committedAt));
+        var free = new WorldMetadata.State(state.epoch(), WorldPhase.FREE, null, null, version, committedAt, null);
         var next = new WorldMetadata(worldId, entry.metadata.name(), entry.metadata.createdAt(), free, entry.metadata.cancellations(), commits);
         // 先确认元数据不会因审计历史超过上限而失败。
         if (next.toJson().getBytes(StandardCharsets.UTF_8).length > MAX_METADATA_BYTES) throw new IOException("World metadata exceeds limit");
