@@ -31,6 +31,11 @@ sourceSets.main.resources {
 
 repositories {
     mavenCentral()
+    maven {
+        name = 'Xaero'
+        url = 'https://chocolateminecraft.com/maven'
+        content { includeGroupByRegex 'xaero\\..*' }
+    }
     // Add here additional repositories if required by some of the dependencies below.
 }
 
@@ -130,6 +135,10 @@ configurations {
 }
 
 dependencies {
+    // 可选兼容只在编译时引用 Xaero；发布 JAR 不打包这些模组。
+    compileOnly 'xaero.map:xaeroworldmap-neoforge-1.21.1:1.47.0'
+    compileOnly 'xaero.minimap:xaerominimap-neoforge-1.21.1:26.6.0'
+    compileOnly 'xaero.lib:xaerolib-neoforge-1.21.1:1.7.3'
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.10.2'
     // Example optional mod dependency with JEI
@@ -153,6 +162,31 @@ dependencies {
     // For more info:
     // http://www.gradle.org/docs/current/userguide/artifact_dependencies_tutorial.html
     // http://www.gradle.org/docs/current/userguide/dependency_management.html
+}
+
+// 使用实际 Xaero 类验证 Mixin；普通测试仍验证未安装 Xaero 的运行环境。
+def xaeroTests = providers.gradleProperty('xaeroTests').getOrElse('none')
+if (xaeroTests in ['both', 'worldmap', 'minimap']) {
+    dependencies {
+        testImplementation 'xaero.lib:xaerolib-neoforge-1.21.1:1.7.3'
+    }
+    if (xaeroTests in ['both', 'worldmap']) {
+        sourceSets.test.java.srcDir('src/xaeroWorldMapTest/java')
+        sourceSets.test.resources.srcDir('src/xaeroWorldMapTest/resources')
+        dependencies { testImplementation 'xaero.map:xaeroworldmap-neoforge-1.21.1:1.47.0' }
+        tasks.named('prepareNeoForgeTestFiles').configure {
+            // forgejunitdev 使用 SERVER 侧；测试配置将相同客户端注入装配到真实发布类。
+            programArguments.addAll('--mixin', 'worldrelay.xaero-worldmap-test.mixins.json')
+        }
+    }
+    if (xaeroTests in ['both', 'minimap']) {
+        sourceSets.test.java.srcDir('src/xaeroMinimapTest/java')
+        sourceSets.test.resources.srcDir('src/xaeroMinimapTest/resources')
+        dependencies { testImplementation 'xaero.minimap:xaerominimap-neoforge-1.21.1:26.6.0' }
+        tasks.named('prepareNeoForgeTestFiles').configure {
+            programArguments.addAll('--mixin', 'worldrelay.xaero-minimap-test.mixins.json')
+        }
+    }
 }
 
 tasks.named('test', Test).configure {

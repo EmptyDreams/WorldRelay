@@ -73,6 +73,19 @@ public final class SharedWorldConnection implements AutoCloseable {
         return host.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.localhost");
     }
 
+    /** 登录事件之前也可识别访客；必须同时匹配本次连接、逻辑域名和实际转发入口。 */
+    public static @org.jetbrains.annotations.Nullable String worldId(Connection connection, ServerData server) {
+        if (server == null) return null;
+        for (SharedWorldConnection candidate : new SharedWorldConnection[]{pending, active}) {
+            if (candidate != null && candidate.host.equals(server.ip) && candidate.local != null
+                && candidate.local.equals(connection.getRemoteAddress())
+                && (candidate.minecraftConnection == null || candidate.minecraftConnection == connection)) {
+                return candidate.host.substring(0, 36);
+            }
+        }
+        return null;
+    }
+
     public static Optional<ResolvedServerAddress> resolve(ServerAddress address) {
         SharedWorldConnection connection = pending != null && pending.host.equals(address.getHost()) ? pending : active;
         if (connection == null || !connection.host.equals(address.getHost()) || address.getPort() != 25565 || connection.local == null)

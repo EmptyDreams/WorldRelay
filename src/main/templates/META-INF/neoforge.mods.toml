@@ -38,6 +38,14 @@ WorldRelay lets players share a Minecraft world by taking turns hosting it local
 [[mixins]]
 config="${mod_id}.mixins.json"
 
+[[mixins]]
+config="worldrelay.xaero-worldmap.mixins.json"
+requiredMods=["xaeroworldmap"]
+
+[[mixins]]
+config="worldrelay.xaero-minimap.mixins.json"
+requiredMods=["xaerominimap"]
+
 # The [[accessTransformers]] block allows you to declare where your AT file is.
 # If this block is omitted, a fallback attempt will be made to load an AT from META-INF/accesstransformer.cfg
 #[[accessTransformers]]

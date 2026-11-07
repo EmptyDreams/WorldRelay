@@ -1,0 +1,8 @@
+{
+  "required": true,
+  "package": "top.kmar.mc.worldreplay.mixin.compat",
+  "plugin": "top.kmar.mc.worldreplay.compat.xaero.XaeroMixinPlugin",
+  "compatibilityLevel": "JAVA_21",
+  "client": ["XaeroMinimapMixin"],
+  "injectors": {"defaultRequire": 1}
+}

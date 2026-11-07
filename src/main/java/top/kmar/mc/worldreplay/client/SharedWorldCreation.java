@@ -508,6 +508,12 @@ public final class SharedWorldCreation {
         return matching(server) != null;
     }
 
+    /** 仅向可选客户端兼容暴露实际匹配的房主世界身份，不使用遗留恢复记录。 */
+    public static @org.jetbrains.annotations.Nullable String worldId(MinecraftServer server) {
+        Creation creation = matching(server);
+        return creation == null ? null : creation.session.worldId();
+    }
+
     @SubscribeEvent
     public static void onJoined(ClientPlayerNetworkEvent.LoggingIn event) {
         SharedWorldConnection.joined(event.getConnection());
