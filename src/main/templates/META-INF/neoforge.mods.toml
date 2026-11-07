@@ -39,6 +39,10 @@ WorldRelay lets players share a Minecraft world by taking turns hosting it local
 config="${mod_id}.mixins.json"
 
 [[mixins]]
+config="worldrelay.create.mixins.json"
+requiredMods=["create"]
+
+[[mixins]]
 config="worldrelay.xaero-worldmap.mixins.json"
 requiredMods=["xaeroworldmap"]
 

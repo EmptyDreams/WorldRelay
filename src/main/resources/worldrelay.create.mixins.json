@@ -1,0 +1,7 @@
+{
+  "required": true,
+  "package": "top.kmar.mc.worldreplay.mixin.compat",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": ["CreateSchematicLoaderMixin", "CreateSchematicItemMixin"],
+  "injectors": {"defaultRequire": 1}
+}

@@ -36,6 +36,17 @@ repositories {
         url = 'https://chocolateminecraft.com/maven'
         content { includeGroupByRegex 'xaero\\..*' }
     }
+    def createRepository = maven {
+        name = 'Create'
+        url = 'https://maven.createmod.net'
+    }
+    exclusiveContent {
+        forRepositories(createRepository)
+        filter {
+            includeGroup 'com.simibubi.create'
+            includeGroup 'net.createmod.ponder'
+        }
+    }
     // Add here additional repositories if required by some of the dependencies below.
 }
 
@@ -135,6 +146,8 @@ configurations {
 }
 
 dependencies {
+    // 只编译服务端蓝图适配；不把 Create 或其依赖加入发布产物。
+    compileOnly('com.simibubi.create:create-1.21.1:6.0.10-281') { transitive = false }
     // 可选兼容只在编译时引用 Xaero；发布 JAR 不打包这些模组。
     compileOnly 'xaero.map:xaeroworldmap-neoforge-1.21.1:1.47.0'
     compileOnly 'xaero.minimap:xaerominimap-neoforge-1.21.1:26.6.0'
@@ -164,7 +177,23 @@ dependencies {
     // http://www.gradle.org/docs/current/userguide/dependency_management.html
 }
 
-// 使用实际 Xaero 类验证 Mixin；普通测试仍验证未安装 Xaero 的运行环境。
+// 可选模组的发布类测试单独启用；普通回归保持未安装这些模组的环境。
+if (providers.gradleProperty('createTests').getOrElse('false').toBoolean()) {
+    sourceSets.test.java.srcDir('src/createTest/java')
+    def createTestAgent = configurations.create('createTestAgent')
+    dependencies {
+        testImplementation('com.simibubi.create:create-1.21.1:6.0.10-281') { transitive = false }
+        // 蓝图桌继承的 Ponder 接口；运行时由 Create JAR 内置的相同版本提供。
+        testCompileOnly('net.createmod.ponder:ponder-neoforge:1.0.82+mc1.21.1') { transitive = false }
+        testImplementation 'org.mockito:mockito-core:5.24.0'
+        add('createTestAgent', 'org.mockito:mockito-core:5.24.0') { transitive = false }
+    }
+    tasks.named('test', Test).configure {
+        // 显式安装官方测试 agent，避免 JDK 运行时自附加及对应警告。
+        jvmArgs "-javaagent:${createTestAgent.asPath}", '-Xshare:off'
+    }
+}
+
 def xaeroTests = providers.gradleProperty('xaeroTests').getOrElse('none')
 if (xaeroTests in ['both', 'worldmap', 'minimap']) {
     dependencies {
