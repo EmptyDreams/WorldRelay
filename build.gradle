@@ -137,6 +137,11 @@ neoForge {
     }
 }
 
+// 无画面 JUnit 通过测试插件装配真实的客户端地址解析 Mixin。
+tasks.named('prepareNeoForgeTestFiles').configure {
+    programArguments.addAll('--mixin', 'worldrelay.connection-test.mixins.json')
+}
+
 // Sets up a dependency configuration called 'localRuntime'.
 // This configuration should be used instead of 'runtimeOnly' to declare
 // a dependency that will be present for runtime testing but that is
