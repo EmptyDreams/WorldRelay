@@ -8,6 +8,10 @@
   ],
   "client": [
     "CreateWorldScreenMixin",
+    "SharedAddressResolverMixin",
+    "SharedConnectMixin",
+    "SharedLoginDisconnectMixin",
+    "SharedPublishMixin",
     "SharedServerStopMixin"
   ],
   "injectors": {

@@ -16,6 +16,27 @@ import java.util.concurrent.*;
 /** 有界、无重定向的协调请求；仅在后台调用，不记录凭据或服务端正文。 */
 final class WorldOwnershipClient {
 
+    static final class RequestException extends IOException {
+
+        private final int status;
+        private final String code;
+
+        RequestException(int status, String code) {
+            super("Coordination request failed: HTTP " + status + " (" + code + ")");
+            this.status = status;
+            this.code = code;
+        }
+
+        int status() {
+            return status;
+        }
+
+        String code() {
+            return code;
+        }
+
+    }
+
     private static final Set<String> PHASES = Set.of("PREPARING", "STARTING", "RUNNING", "STOPPING", "COMMITTING");
 
     record View(String worldId, long epoch, String sessionId, String phase, boolean hasSave,
@@ -56,6 +77,20 @@ final class WorldOwnershipClient {
         return view;
     }
 
+    static boolean heartbeat(ClientConnectionSettings settings, String user, LocalWorldSession session, Integer players) throws IOException {
+        JsonObject body = identity(session);
+        if (players != null) body.addProperty("playerCount", players);
+        String response = post(settings, user, "heartbeat", body, false);
+        View view = parse(response);
+        view.checkSession(session);
+        try {
+            return view.phase().equals("RUNNING")
+                && ClientJson.requiredString(JsonParser.parseString(response).getAsJsonObject(), "status").equals("RECOVERY_REQUIRED");
+        } catch (RuntimeException failure) {
+            throw new IOException("Invalid heartbeat status");
+        }
+    }
+
     /** 取消成功返回 204，没有所有权视图；与必须返回视图的协调操作分开。 */
     static void cancelCreation(ClientConnectionSettings settings, String user, LocalWorldSession session) throws IOException {
         post(settings, user, "cancel-creation", identity(session), true);
@@ -93,7 +128,12 @@ final class WorldOwnershipClient {
                 byte[] bytes = response.body();
                 int status = response.statusCode();
                 if (noContent ? status != 204 : status != 200 && status != 201 && status != 202) {
-                    throw new IOException("Ownership request failed: HTTP " + status);
+                    String code = "REQUEST_FAILED";
+                    try {
+                        String candidate = JsonParser.parseString(new String(bytes, StandardCharsets.UTF_8)).getAsJsonObject().get("code").getAsString();
+                        if (candidate.matches("[A-Z_]{1,64}")) code = candidate;
+                    } catch (RuntimeException ignored) { /* 错误正文不进入日志。 */ }
+                    throw new RequestException(status, code);
                 }
                 if (noContent && bytes.length != 0) throw new IOException("Unexpected cancellation response");
                 return new String(bytes, StandardCharsets.UTF_8);

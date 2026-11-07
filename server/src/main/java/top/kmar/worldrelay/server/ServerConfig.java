@@ -1,6 +1,7 @@
 package top.kmar.worldrelay.server;
 
 import top.kmar.worldrelay.server.auth.SshRegistrationConfig;
+import top.kmar.worldrelay.server.tunnel.TunnelConfig;
 
 import java.io.IOException;
 import java.io.Reader;
@@ -14,14 +15,15 @@ import java.util.Set;
 /** HTTP 服务配置；类初始化期间不读取文件或部署环境配置。 */
 public record ServerConfig(String bindAddress, int port, int maxConcurrentRequests, int shutdownGraceSeconds,
                            int registrationPort, Path usersFile, Path worldsDirectory,
-                           int heartbeatIntervalSeconds, int heartbeatTimeoutSeconds, SshRegistrationConfig ssh) {
+                           int heartbeatIntervalSeconds, int heartbeatTimeoutSeconds, SshRegistrationConfig ssh, TunnelConfig tunnel) {
 
     private static final Set<String> KEYS = Set.of(
         "http.bind-address", "http.port", "http.max-concurrent-requests", "http.shutdown-grace-seconds",
         "registration.port", "auth.users-file", "worlds.directory",
         "ownership.heartbeat-interval-seconds", "ownership.heartbeat-timeout-seconds",
         "ssh.authorized-keys-file", "ssh.transfer-directory", "ssh.rrsync-command", "ssh.transfer-user", "ssh.host-public-key-file",
-        "ssh.public-host", "ssh.public-port"
+        "ssh.public-host", "ssh.public-port", "tunnel.mode", "tunnel.bind-address", "tunnel.port",
+        "tunnel.public-host", "tunnel.public-port", "tunnel.tls-directory"
     );
 
     public ServerConfig {
@@ -57,6 +59,18 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
             throw new IllegalArgumentException("Heartbeat timeout must be greater than the positive interval");
         }
         Objects.requireNonNull(ssh, "ssh");
+        Objects.requireNonNull(tunnel, "tunnel");
+        if (tunnel.port() != 0 && (tunnel.port() == port || tunnel.port() == registrationPort))
+            throw new IllegalArgumentException("Tunnel port must differ from HTTP ports");
+    }
+
+    public ServerConfig(
+        String bindAddress, int port, int maxConcurrentRequests, int shutdownGraceSeconds,
+        int registrationPort, Path usersFile, Path worldsDirectory, int heartbeatIntervalSeconds,
+        int heartbeatTimeoutSeconds, SshRegistrationConfig ssh
+    ) {
+        this(bindAddress, port, maxConcurrentRequests, shutdownGraceSeconds, registrationPort, usersFile, worldsDirectory,
+            heartbeatIntervalSeconds, heartbeatTimeoutSeconds, ssh, TunnelConfig.defaults(usersFile, port));
     }
 
     public ServerConfig(
@@ -131,7 +145,8 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
                 properties.getProperty("ssh.transfer-user", sshDefaults.transferUser()),
                 Path.of(properties.getProperty("ssh.host-public-key-file", sshDefaults.hostPublicKeyFile().toString())),
                 properties.getProperty("ssh.public-host", sshDefaults.publicHost()),
-                integer(properties, "ssh.public-port", sshDefaults.publicPort()))
+                integer(properties, "ssh.public-port", sshDefaults.publicPort())),
+            TunnelConfig.load(properties, usersFile, integer(properties, "http.port", defaults.port()))
         );
     }
 

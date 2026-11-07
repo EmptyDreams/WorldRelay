@@ -14,6 +14,27 @@ class ServerConfigTest {
     @TempDir
     Path directory;
 
+    /** 验证配置文件选择唯一入口：WSS 仅监听回环，TCP 接受 IP 或域名并使用独立 TLS 目录。 */
+    @Test
+    void selectsTunnelModeAndAdvertisesConfiguredTcpEndpoint() throws Exception {
+        Path file = directory.resolve("tunnel.properties");
+        Files.writeString(file, "http.port=0\nregistration.port=0\ntunnel.mode=wss\ntunnel.port=0\n");
+        var wss = ServerConfig.load(file).tunnel();
+        assertEquals(top.kmar.worldrelay.server.tunnel.TunnelConfig.Mode.WSS, wss.mode());
+        assertEquals("127.0.0.1", wss.bindAddress());
+        for (String host : new String[]{"121.89.94.223", "relay.example.com", "2001:db8::1"}) {
+            Files.writeString(file, "tunnel.mode=tcp\ntunnel.port=2002\ntunnel.public-host=" + host + "\ntunnel.public-port=3002\ntunnel.tls-directory=runtime/tls\n");
+            var tcp = ServerConfig.load(file).tunnel();
+            assertEquals(top.kmar.worldrelay.server.tunnel.TunnelConfig.Mode.TCP, tcp.mode());
+            assertEquals("0.0.0.0", tcp.bindAddress());
+            assertEquals(host, tcp.publicHost());
+            assertEquals(3002, tcp.publicPort());
+            assertEquals(Path.of("runtime/tls"), tcp.tlsDirectory());
+        }
+        Files.writeString(file, "tunnel.mode=wss\ntunnel.bind-address=0.0.0.0\n");
+        assertThrows(IllegalArgumentException.class, () -> ServerConfig.load(file));
+    }
+
     /** 验证 SSH 路径及对外连接地址由部署配置指定，非法的必填配置被拒绝。 */
     @Test
     void loadsSshRegistrationPathsAndRejectsEmptyValues() throws Exception {

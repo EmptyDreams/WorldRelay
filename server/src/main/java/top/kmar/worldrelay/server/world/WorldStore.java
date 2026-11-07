@@ -22,6 +22,36 @@ import java.util.function.Supplier;
 /** 唯一的元数据写入入口；退出、超时和上传完成声明均不会释放所有权。 */
 public final class WorldStore implements AutoCloseable {
 
+    private java.util.function.Consumer<String> tunnelInvalidated = ignored -> {};
+    private java.util.function.Predicate<String> tunnelAvailable = ignored -> true;
+
+    /** 回调只进行内存状态更新与异步关闭，不得在存储锁中等待网络。 */
+    public synchronized void configureTunnels(java.util.function.Consumer<String> invalidated, java.util.function.Predicate<String> available) {
+        tunnelInvalidated = Objects.requireNonNull(invalidated);
+        tunnelAvailable = Objects.requireNonNull(available);
+    }
+
+    public synchronized void checkTunnelOwner(String world, Identity identity) throws WorldAccessException {
+        Entry entry = owned(world, identity);
+        var phase = entry.metadata.state().phase();
+        if (phase != WorldPhase.STARTING && phase != WorldPhase.RUNNING)
+            throw conflict("INVALID_PHASE", "World is not ready for a host tunnel");
+    }
+
+    public synchronized Identity joinTunnelOwner(String world) throws WorldAccessException {
+        Entry entry = entry(world);
+        if (!status(entry).equals("RUNNING")) throw conflict("HOST_UNAVAILABLE", "World is not accepting players");
+        var state = entry.metadata.state();
+        var owner = state.owner();
+        return new Identity(owner.username(), owner.deviceId(), owner.sessionId(), state.epoch());
+    }
+
+    public synchronized void tunnelOffline(String world, Identity identity) {
+        try {
+            owned(world, identity).joinReady = false;
+        } catch (WorldAccessException ignored) { /* 旧登记不能撤下新任期。 */ }
+    }
+
     // 保留取消审计和获取请求墓碑；达到上限时拒绝取消，不丢弃历史或释放所有权。
     static final int MAX_METADATA_BYTES = 1024 * 1024;
     private final Path root;
@@ -430,7 +460,8 @@ public final class WorldStore implements AutoCloseable {
         var state = entry.metadata.state();
         if (entry.unavailable) return "RECOVERY_REQUIRED";
         if (state.owner() != null && (!online(entry, ticker.getAsLong())
-            || (state.phase() == WorldPhase.RUNNING && !entry.joinReady))) return "RECOVERY_REQUIRED";
+            || (state.phase() == WorldPhase.RUNNING && (!entry.joinReady || !tunnelAvailable.test(entry.metadata.worldId())))))
+            return "RECOVERY_REQUIRED";
         return state.phase().name();
     }
 
@@ -479,7 +510,11 @@ public final class WorldStore implements AutoCloseable {
                 entry.players = null;
                 throw failure;
             }
+            boolean ownershipChanged = next.state().epoch() != entry.metadata.state().epoch()
+                || !Objects.equals(next.state().owner(), entry.metadata.state().owner());
             entry.metadata = next;
+            if (ownershipChanged || next.state().phase() != WorldPhase.STARTING && next.state().phase() != WorldPhase.RUNNING)
+                tunnelInvalidated.accept(next.worldId());
         } finally {
             // 发布成功后的临时路径已消失；清理失败不能掩盖已完成的元数据提交。
             try {

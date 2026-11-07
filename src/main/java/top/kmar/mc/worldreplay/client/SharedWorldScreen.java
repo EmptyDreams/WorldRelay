@@ -392,7 +392,7 @@ public final class SharedWorldScreen extends Screen {
                 }
                 WorldList.this.setSelected(this);
                 Minecraft.getInstance().getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.0F));
-                SharedWorldCreation.join(SharedWorldScreen.this, world.worldId(), world.name().getString(), world.status().name());
+                SharedWorldCreation.join(SharedWorldScreen.this, world.worldId(), world.name().getString());
             }
 
             @Override

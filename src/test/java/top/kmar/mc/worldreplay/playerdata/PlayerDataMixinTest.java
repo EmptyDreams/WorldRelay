@@ -25,6 +25,27 @@ class PlayerDataMixinTest {
     private final GameProfile profile = new GameProfile(UUID.randomUUID(), "WorldRelayTest");
     private final InetSocketAddress address = new InetSocketAddress("127.0.0.1", 25565);
 
+    /** 已鉴权隧道的明确确认只许可匹配的实际登录玩家；许可消费后仍由 UUID 文件路径保存数据。 */
+    @SuppressWarnings("unused") // admission 在 try-with-resources 退出时撤销连接许可。
+    @Test
+    void admitsConsentingAuthenticatedGuestAndRejectsAnotherLoginIdentity() throws Exception {
+        Path world = Files.createDirectory(saves.resolve("tunnel-shared"));
+        Files.createFile(world.resolve(SharedPlayerData.MARKER_FILE));
+        try (var access = LevelStorageSource.createDefault(saves).validateAndCreateAccess("tunnel-shared");
+             var admission = TunnelPlayerAccess.register(address, profile.getName(), true)) {
+            PlayerDataStorage storage = access.createPlayerStorage();
+            @SuppressWarnings("DataFlowIssue")
+            PlayerList players = new PlayerList(null, null, storage, 8) {
+            };
+            assertNull(players.canPlayerLogin(address, profile));
+            var data = ((SharedPlayerData.Access) storage).worldrelay$getSharedPlayerData();
+            assertTrue(data.readPrimary(profile.getId()).isEmpty());
+            assertFalse(data.hasCreationApproval(profile.getId()));
+            assertEquals(net.minecraft.network.chat.Component.translatable("worldrelay.disconnect.tunnel_identity_mismatch"),
+                players.canPlayerLogin(address, new GameProfile(UUID.randomUUID(), "AnotherPlayer")));
+        }
+    }
+
     /**
      * 实际登录检查应拒绝共享世界中尚未确认的新玩家，明确确认后允许重试加入；
      * 登录检查本身不应创建玩家文件。

@@ -8,12 +8,14 @@ import net.minecraft.client.gui.screens.worldselection.WorldOpenFlows;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.DirectoryLock;
+import net.minecraft.util.HttpUtil;
 import net.minecraft.world.level.storage.LevelResource;
 import net.minecraft.world.level.storage.LevelStorageSource;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.ModList;
 import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.event.server.ServerStoppedEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
@@ -56,14 +58,9 @@ public final class SharedWorldCreation {
         return opening;
     }
 
-    public static void join(Screen parent, String worldId, String worldName, String status) {
+    public static void join(Screen parent, String worldId, String worldName) {
         Minecraft client = Minecraft.getInstance();
         if (joining) return;
-        if (!status.equals("FREE") && !status.equals("RECOVERY_REQUIRED") && !status.equals("OWNED_OFFLINE")
-            && !status.equals("PREPARING") && !status.equals("STARTING") && !status.equals("STOPPING") && !status.equals("COMMITTING")) {
-            show(parent, "not_available", false, null);
-            return;
-        }
         if (active != null && !active.session.worldId().equals(worldId)) {
             show(parent, "unfinished", false, null);
             return;
@@ -75,12 +72,24 @@ public final class SharedWorldCreation {
         Path game = client.gameDirectory.toPath();
         IO.execute(() -> {
             try {
-                LocalWorldSessionStore.lockGame(game);
                 var settings = ClientConnectionSettings.load(game.resolve("config/worldrelay-client.json"));
+                var current = SharedWorldListClient.fetch(settings, user).stream().filter(world -> world.worldId().equals(worldId)).findFirst()
+                    .orElseThrow(() -> new IOException("World is unavailable"));
+                if (current.status().equals("RUNNING")) {
+                    joinGuest(parent, settings, user, worldId, worldName);
+                    return;
+                }
+                LocalWorldSessionStore.lockGame(game);
                 var store = new LocalWorldSessionStore(game, settings.serverUri().toString(), user, profile, worldId);
                 var session = store.read();
                 if (session == null || session.stage() == LocalWorldSession.Stage.CANCELLED || session.stage() == LocalWorldSession.Stage.COMMITTED) {
-                    if (!status.equals("FREE")) throw new IOException("World belongs to another session");
+                    if (!current.status().equals("FREE")) {
+                        client.execute(() -> {
+                            joining = false;
+                            show(parent, "not_available", false, () -> join(parent, worldId, worldName));
+                        });
+                        return;
+                    }
                     session = new LocalWorldSession(worldId, LocalWorldSessionStore.device(game), UUID.randomUUID().toString(),
                         null, 0, LocalWorldSession.Stage.ACQUIRING, null);
                     store.write(session); // 响应丢失时用同一个 requestId 恢复，绝不重新抢锁。
@@ -116,7 +125,19 @@ public final class SharedWorldCreation {
                     });
                     return;
                 }
-                var view = WorldOwnershipClient.acquire(settings, user, session);
+                WorldOwnershipClient.View view;
+                try {
+                    view = WorldOwnershipClient.acquire(settings, user, session);
+                } catch (WorldOwnershipClient.RequestException failure) {
+                    if (failure.status() == 409 && session.stage() == LocalWorldSession.Stage.ACQUIRING) {
+                        var changed = SharedWorldListClient.fetch(settings, user).stream().filter(world -> world.worldId().equals(worldId)).findFirst();
+                        if (changed.isPresent() && changed.get().status().equals("RUNNING")) {
+                            joinGuest(parent, settings, user, worldId, worldName);
+                            return;
+                        }
+                    }
+                    throw failure;
+                }
                 if (!view.phase().equals("PREPARING") && !(session.stage() == LocalWorldSession.Stage.DOWNLOADING && view.phase().equals("STARTING"))) {
                     client.execute(() -> {
                         joining = false;
@@ -146,7 +167,7 @@ public final class SharedWorldCreation {
                             CreateWorldScreen.openFresh(client, new ReturnScreen(creation));
                             if (client.screen instanceof CreateWorldScreen screen) screen.getUiState().setName(worldName);
                         } catch (RuntimeException failure) {
-                            show(parent, "failed", false, () -> join(parent, worldId, worldName, status));
+                            show(parent, "failed", false, () -> join(parent, worldId, worldName));
                         } finally {
                             opening = null;
                         }
@@ -156,8 +177,24 @@ public final class SharedWorldCreation {
                 WorldRelay.LOGGER.warn("Shared world acquisition did not complete ({})", failure.getClass().getSimpleName());
                 client.execute(() -> {
                     joining = false;
-                    show(parent, "failed", false, () -> join(parent, worldId, worldName, status));
+                    String message = failure instanceof WorldOwnershipClient.RequestException request && request.code().equals("MOD_MISMATCH")
+                        ? "mod_mismatch" : "failed";
+                    show(parent, message, false, () -> join(parent, worldId, worldName));
                 });
+            }
+        });
+    }
+
+    @SuppressWarnings("resource") // 所有权交给连接上下文，在取消、失败或断开事件中关闭。
+    private static void joinGuest(Screen parent, ClientConnectionSettings settings, String user, String worldId, String worldName) throws Exception {
+        var connection = SharedWorldConnection.prepare(parent, settings, user, worldId, worldName, compatibility());
+        Minecraft.getInstance().execute(() -> {
+            joining = false;
+            try {
+                connection.start();
+            } catch (RuntimeException failure) {
+                connection.close();
+                show(parent, "connect_failed", false, () -> join(parent, worldId, worldName));
             }
         });
     }
@@ -189,6 +226,10 @@ public final class SharedWorldCreation {
         private volatile boolean normalStop;
         private volatile boolean saveReturned;
         private volatile boolean finishing;
+        private volatile SharedWorldHost tunnelHost;
+        private volatile boolean fenced;
+        private long nextHostAttempt;
+        private long nextPlayerCount;
         private final SaveFailureMonitor saveMonitor = new SaveFailureMonitor();
         private boolean monitorAttached;
         private boolean finishScreenShown;
@@ -225,7 +266,9 @@ public final class SharedWorldCreation {
             heartbeat = HEARTBEATS.scheduleWithFixedDelay(() -> {
                 if (active != this) return;
                 try {
-                    WorldOwnershipClient.command(settings, user, session, "heartbeat", null);
+                    SharedWorldHost host = tunnelHost;
+                    boolean republish = WorldOwnershipClient.heartbeat(settings, user, session, host == null ? null : host.players());
+                    if (republish && host != null) host.republish();
                 } catch (IOException failure) {
                     WorldRelay.LOGGER.warn("Shared world heartbeat failed; ownership is retained");
                 }
@@ -288,6 +331,10 @@ public final class SharedWorldCreation {
         }
 
         private void uploadStopped() {
+            if (fenced) {
+                show(parent, "ownership_lost", false, null);
+                return;
+            }
             if (busy) return;
             busy = true;
             finishing = true;
@@ -434,6 +481,7 @@ public final class SharedWorldCreation {
         if (creation == null || creation.worldDirectory == null
             || !event.getServer().getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize().equals(creation.worldDirectory)) return;
         creation.normalStop = true;
+        if (creation.tunnelHost != null) creation.tunnelHost.close();
         IO.execute(() -> {
             try {
                 creation.save(creation.session.with(LocalWorldSession.Stage.STOPPING, creation.session.folder()));
@@ -456,6 +504,20 @@ public final class SharedWorldCreation {
             && server.getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize().equals(creation.worldDirectory) ? creation : null;
     }
 
+    public static boolean managed(MinecraftServer server) {
+        return matching(server) != null;
+    }
+
+    @SubscribeEvent
+    public static void onJoined(ClientPlayerNetworkEvent.LoggingIn event) {
+        SharedWorldConnection.joined(event.getConnection());
+    }
+
+    @SubscribeEvent
+    public static void onLeft(ClientPlayerNetworkEvent.LoggingOut event) {
+        SharedWorldConnection.left(event.getConnection());
+    }
+
     @SubscribeEvent
     public static void onServerStopped(ServerStoppedEvent event) {
         Creation creation = matching(event.getServer());
@@ -469,6 +531,14 @@ public final class SharedWorldCreation {
                     throw new IOException("World did not stop cleanly");
                 }
                 creation.save(creation.session.with(LocalWorldSession.Stage.STOPPED, creation.session.folder()));
+                if (creation.fenced) {
+                    Minecraft.getInstance().execute(() -> {
+                        creation.finishMessage = "ownership_lost";
+                        creation.finishPending = false;
+                        creation.finishScreenShown = false;
+                    });
+                    return;
+                }
                 Minecraft.getInstance().execute(creation::uploadStopped);
             } catch (Exception failure) {
                 Minecraft.getInstance().execute(() -> {
@@ -485,7 +555,27 @@ public final class SharedWorldCreation {
     @SubscribeEvent
     public static void onClientTick(ClientTickEvent.Post event) {
         Minecraft client = Minecraft.getInstance();
+        SharedWorldConnection.tick();
         Creation creation = active;
+        var server = client.getSingleplayerServer();
+        if (creation != null && !creation.finishing && !creation.fenced && client.player != null && server != null && matching(server) == creation) {
+            long now = net.minecraft.Util.getMillis();
+            if (creation.tunnelHost == null && now >= creation.nextHostAttempt) {
+                creation.nextHostAttempt = now + 5_000;
+                if (server.isPublished() || server.publishServer(null, server.getWorldData().isAllowCommands(), HttpUtil.getAvailablePort())) {
+                    creation.tunnelHost = new SharedWorldHost(creation.settings, creation.user, creation.session, compatibility(), server.getPort(),
+                        () -> client.execute(() -> {
+                            creation.fenced = true;
+                            client.gui.getChat().addMessage(Component.translatable("worldrelay.creation.ownership_lost"));
+                        }));
+                } else WorldRelay.LOGGER.warn("Shared world local listener could not be opened; ownership is retained");
+            }
+            if (creation.tunnelHost != null && now >= creation.nextPlayerCount) {
+                creation.nextPlayerCount = now + 1_000;
+                var host = creation.tunnelHost;
+                server.execute(() -> host.players(server.getPlayerCount()));
+            }
+        }
         if (creation == null || !creation.finishing || client.level != null || creation.finishScreenShown) return;
         creation.finishScreenShown = true;
         show(creation.parent, creation.finishMessage, creation.finishPending,

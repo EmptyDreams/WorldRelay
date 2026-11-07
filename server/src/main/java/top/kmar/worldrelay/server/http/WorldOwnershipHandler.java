@@ -5,8 +5,8 @@ import com.sun.net.httpserver.HttpHandler;
 import top.kmar.worldrelay.server.json.JsonReader;
 import top.kmar.worldrelay.server.json.JsonToken;
 import top.kmar.worldrelay.server.json.JsonWriter;
-import top.kmar.worldrelay.server.protocol.HostEndpoint;
 import top.kmar.worldrelay.server.protocol.OwnershipView;
+import top.kmar.worldrelay.server.tunnel.TunnelGateway;
 import top.kmar.worldrelay.server.world.WorldAccessException;
 import top.kmar.worldrelay.server.world.WorldStore;
 
@@ -27,10 +27,12 @@ public final class WorldOwnershipHandler implements HttpHandler {
     private static final Set<String> IDENTITY_FIELDS = Set.of("worldId", "deviceId", "sessionId", "epoch");
     private final WorldStore worlds;
     private final Action action;
+    private final TunnelGateway tunnels;
 
-    public WorldOwnershipHandler(WorldStore worlds, Action action) {
+    public WorldOwnershipHandler(WorldStore worlds, Action action, TunnelGateway tunnels) {
         this.worlds = Objects.requireNonNull(worlds);
         this.action = Objects.requireNonNull(action);
+        this.tunnels = Objects.requireNonNull(tunnels);
     }
 
     @Override
@@ -68,8 +70,9 @@ public final class WorldOwnershipHandler implements HttpHandler {
                 }
                 view = switch (action) {
                     case HEARTBEAT -> worlds.heartbeat(command.worldId, identity, command.playerCount);
-                    case READY -> worlds.ready(command.worldId, identity, WorldStore.ReadyStage.valueOf(command.stage),
-                        command.baseVersion, command.endpoint);
+                    case READY -> "PORT_OPENED".equals(command.stage)
+                        ? tunnels.ready(command.worldId, identity, command.tunnelId)
+                        : worlds.ready(command.worldId, identity, WorldStore.ReadyStage.valueOf(command.stage), command.baseVersion, null);
                     case STOP -> worlds.stop(command.worldId, identity, WorldStore.StopStage.valueOf(command.stage), command.baseVersion);
                     case ACQUIRE, CANCEL_CREATION -> throw new IllegalStateException("Already handled action");
                 };
@@ -83,18 +86,17 @@ public final class WorldOwnershipHandler implements HttpHandler {
     }
 
     private record Command(String worldId, String deviceId, String requestId, String sessionId, long epoch,
-                           String stage, Long baseVersion, Integer playerCount, HostEndpoint endpoint) {
+                           String stage, Long baseVersion, Integer playerCount, String tunnelId) {
 
     }
 
     private Command parse(String json) {
         JsonReader reader = new JsonReader(json, MAX_BODY_BYTES, 4);
         Set<String> fields = new HashSet<>();
-        String world = null, device = null, request = null, session = null, stage = null, address = null;
+        String world = null, device = null, request = null, session = null, stage = null, tunnel = null;
         long epoch = 0;
         Long base = null;
         Integer players = null;
-        int port = 0;
         reader.beginObject();
         while (reader.hasNext()) {
             String field = reader.nextName();
@@ -111,8 +113,7 @@ public final class WorldOwnershipHandler implements HttpHandler {
                     else base = reader.nextLong();
                 }
                 case "playerCount" -> players = reader.nextInt();
-                case "address" -> address = reader.nextString();
-                case "port" -> port = reader.nextInt();
+                case "tunnelId" -> tunnel = reader.nextString();
                 default -> throw new IllegalArgumentException("Unknown field");
             }
         }
@@ -129,7 +130,10 @@ public final class WorldOwnershipHandler implements HttpHandler {
             required.add("stage");
             WorldStore.ReadyStage ready = WorldStore.ReadyStage.valueOf(Objects.requireNonNullElse(stage, ""));
             if (ready == WorldStore.ReadyStage.SAVE_SYNCED) required.add("baseVersion");
-            else required.addAll(Set.of("address", "port"));
+            else {
+                required.add("tunnelId");
+                WorldStore.validateId(tunnel);
+            }
         } else if (action == Action.STOP) {
             required.add("stage");
             if (WorldStore.StopStage.valueOf(Objects.requireNonNullElse(stage, "")) == WorldStore.StopStage.UPLOAD_COMPLETE) {
@@ -144,8 +148,7 @@ public final class WorldOwnershipHandler implements HttpHandler {
         if (action == Action.ACQUIRE) WorldStore.validateId(request);
         if (base != null && base < 1) throw new IllegalArgumentException("Invalid base version");
         if (players != null && players < 0) throw new IllegalArgumentException("Invalid player count");
-        HostEndpoint endpoint = fields.contains("address") ? new HostEndpoint(address, port) : null;
-        return new Command(world, device, request, session, epoch, stage, base, players, endpoint);
+        return new Command(world, device, request, session, epoch, stage, base, players, tunnel);
     }
 
 }

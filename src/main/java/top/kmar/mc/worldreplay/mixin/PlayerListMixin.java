@@ -16,6 +16,7 @@ import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import top.kmar.mc.worldreplay.WorldRelay;
 import top.kmar.mc.worldreplay.playerdata.SharedPlayerData;
+import top.kmar.mc.worldreplay.playerdata.TunnelPlayerAccess;
 
 import java.net.SocketAddress;
 
@@ -57,10 +58,14 @@ public abstract class PlayerListMixin {
         if (!playerData.isSharedWorld()) {
             return;
         }
+        if (!TunnelPlayerAccess.matches(address, profile)) {
+            callback.setReturnValue(Component.translatable("worldrelay.disconnect.tunnel_identity_mismatch"));
+            return;
+        }
 
         SharedPlayerData.CheckResult result = playerData.check(profile.getId());
         if (result.status() == SharedPlayerData.Status.NEEDS_CREATION_CONFIRMATION) {
-            if (!playerData.hasCreationApproval(profile.getId())) {
+            if (!playerData.hasCreationApproval(profile.getId()) && !playerData.approveTunnelCreation(address, profile)) {
                 callback.setReturnValue(Component.translatable("worldrelay.disconnect.player_data_confirmation_required"));
             }
         } else if (result.status() == SharedPlayerData.Status.ERROR) {

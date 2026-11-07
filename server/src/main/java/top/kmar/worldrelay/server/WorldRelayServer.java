@@ -4,6 +4,7 @@ import top.kmar.worldrelay.server.http.HttpResponses;
 import top.kmar.worldrelay.server.http.HttpRouter;
 import top.kmar.worldrelay.server.http.WorldListHandler;
 import top.kmar.worldrelay.server.http.WorldOwnershipHandler;
+import top.kmar.worldrelay.server.tunnel.TunnelGateway;
 import top.kmar.worldrelay.server.world.WorldStore;
 
 import java.util.concurrent.CountDownLatch;
@@ -38,6 +39,7 @@ public final class WorldRelayServer {
                 }
                 logger.log(System.Logger.Level.INFO, "WorldRelay HTTP listening on {0}", server.apiAddress());
                 logger.log(System.Logger.Level.INFO, "WorldRelay registration listening on {0}", server.registrationAddress());
+                logger.log(System.Logger.Level.INFO, "WorldRelay tunnel ({0}) listening on {1}", config.tunnel().mode(), server.tunnelAddress());
                 // 启动后持续托管，避免 main 返回时 try-with-resources 立即关闭两个监听器。
                 try {
                     stopped.await();
@@ -52,7 +54,7 @@ public final class WorldRelayServer {
     }
 
     /** 显式装配生产路由，供启动入口和集成测试共同使用。 */
-    static HttpRouter createRouter(WorldStore worlds) {
+    static HttpRouter createRouter(WorldStore worlds, TunnelGateway tunnels) {
         HttpRouter router = new HttpRouter();
         router.register("GET", "/api/v1/ping", exchange -> {
             exchange.getResponseHeaders().set("Cache-Control", "no-store");
@@ -61,7 +63,7 @@ public final class WorldRelayServer {
         router.register("GET", "/api/v1/worlds", new WorldListHandler(worlds));
         for (WorldOwnershipHandler.Action action : WorldOwnershipHandler.Action.values()) {
             router.register("POST", "/api/v1/worlds/" + action.name().toLowerCase(java.util.Locale.ROOT).replace('_', '-'),
-                new WorldOwnershipHandler(worlds, action));
+                new WorldOwnershipHandler(worlds, action, tunnels));
         }
         return router;
     }

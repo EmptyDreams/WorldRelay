@@ -3,6 +3,7 @@ package top.kmar.worldrelay.server;
 import top.kmar.worldrelay.server.auth.SshRegistrationConfig;
 import top.kmar.worldrelay.server.auth.UserStore;
 import top.kmar.worldrelay.server.http.*;
+import top.kmar.worldrelay.server.tunnel.TunnelGateway;
 import top.kmar.worldrelay.server.world.WorldStore;
 import top.kmar.worldrelay.server.world.WorldTransfers;
 
@@ -20,6 +21,7 @@ public final class WorldRelayService implements AutoCloseable {
     private WorldRelayHttpServer api;
     private WorldRelayHttpServer registration;
     private TransferJobs transferJobs;
+    private TunnelGateway tunnels;
     private final UserStoreFactory userStoreFactory;
     private boolean closed;
 
@@ -53,7 +55,10 @@ public final class WorldRelayService implements AutoCloseable {
                 config.maxConcurrentRequests(), config.shutdownGraceSeconds(), registrationRouter, LocalRegistrationHandler::new);
             // 先占用注册端口，避免业务端口为 0 时恰好选中配置的注册端口。
             registration.start();
-            HttpRouter apiRouter = WorldRelayServer.createRouter(worlds);
+            tunnels = new TunnelGateway(worlds, config.tunnel());
+            tunnels.start();
+            HttpRouter apiRouter = WorldRelayServer.createRouter(worlds, tunnels);
+            apiRouter.register("POST", "/api/v1/worlds/tunnel-ticket", new TunnelTicketHandler(tunnels));
             var transfers = new WorldTransfers(worlds, users, config.ssh());
             transferJobs = new TransferJobs();
             for (WorldTransferHandler.Action action : WorldTransferHandler.Action.values()) {
@@ -84,6 +89,11 @@ public final class WorldRelayService implements AutoCloseable {
         return registration.address();
     }
 
+    public synchronized InetSocketAddress tunnelAddress() {
+        ensureRunning();
+        return tunnels.address();
+    }
+
     private void ensureRunning() {
         if (closed || api == null) {
             throw new IllegalStateException("Service is not running");
@@ -108,6 +118,7 @@ public final class WorldRelayService implements AutoCloseable {
             } finally {
                 try {
                     if (worlds != null) {
+                        if (tunnels != null) tunnels.close();
                         if (transferJobs != null) transferJobs.close();
                         worlds.close();
                     }

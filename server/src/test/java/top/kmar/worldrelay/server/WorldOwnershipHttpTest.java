@@ -7,6 +7,8 @@ import org.junit.jupiter.api.io.TempDir;
 import top.kmar.worldrelay.server.auth.UserStore;
 import top.kmar.worldrelay.server.json.JsonReader;
 import top.kmar.worldrelay.server.world.WorldStore;
+import top.kmar.worldrelay.tunnel.TunnelConnector;
+import top.kmar.worldrelay.tunnel.TunnelEndpoint;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -119,7 +121,7 @@ class WorldOwnershipHttpTest {
     @Test
     void twoStageLifecycleExposesEndpointOnlyAfterReadyAndNeverReleasesOnStop() throws Exception {
         String session;
-        try (var client = HttpClient.newHttpClient(); var service = new WorldRelayService(config())) {
+        try (var client = HttpClient.newHttpClient(); var service = new WorldRelayService(config()); var tunnel = new TunnelConnector()) {
             service.start();
             var acquired = send(client, post(service, "acquire", acquireFields(world, device, request), auth));
             assertEquals(201, acquired.statusCode(), acquired.body());
@@ -130,15 +132,19 @@ class WorldOwnershipHttpTest {
             assertEquals(200, retry.statusCode());
             assertEquals(acquired.body(), retry.body());
             assertFalse(list(client, service).contains(session));
-            error(send(client, post(service, "ready", identity + ",\"stage\":\"PORT_OPENED\",\"address\":\"::1\",\"port\":25565", auth)),
+            String ticketFields = identity + ",\"role\":\"host\",\"compatibility\":\"" + "a".repeat(64) + "\"";
+            error(send(client, post(service, "tunnel-ticket", ticketFields, auth)),
                 409, "INVALID_PHASE");
             var starting = send(client, post(service, "ready", identity + ",\"stage\":\"SAVE_SYNCED\",\"baseVersion\":null", auth));
             assertEquals("STARTING", field(starting.body(), "phase"));
             assertTrue(starting.body().contains("\"endpoint\":null"));
-            // 无监听器的端口也能登记：本协议由客户端确认，不进行 TCP 或 Minecraft 探测。
-            var running = send(client, post(service, "ready", identity + ",\"stage\":\"PORT_OPENED\",\"address\":\"::1\",\"port\":25565", auth));
+            var ticket = send(client, post(service, "tunnel-ticket", ticketFields, auth));
+            assertEquals(200, ticket.statusCode());
+            var endpoint = new TunnelEndpoint(URI.create("ws://127.0.0.1:" + service.tunnelAddress().getPort() + "/api/v1/tunnel"), null);
+            var control = tunnel.connect(endpoint, field(ticket.body(), "ticket"), ignored -> {}).get(10, java.util.concurrent.TimeUnit.SECONDS);
+            var running = send(client, post(service, "ready", identity + ",\"stage\":\"PORT_OPENED\",\"tunnelId\":\"" + control.registrationId() + "\"", auth));
             assertEquals("RUNNING", field(running.body(), "status"));
-            assertTrue(list(client, service).contains("\"endpoint\":{\"address\":\"::1\",\"port\":25565}"));
+            assertTrue(list(client, service).contains("\"endpoint\":{\"address\":\"" + world + ".localhost\",\"port\":25565}"));
             var heartbeat = send(client, post(service, "heartbeat", identity + ",\"playerCount\":2", auth));
             assertEquals(200, heartbeat.statusCode());
             assertTrue(list(client, service).contains("\"playerCount\":2"));
@@ -266,4 +272,5 @@ class WorldOwnershipHttpTest {
             assertTrue(list(client, service).contains("STARTING"));
         }
     }
+
 }
