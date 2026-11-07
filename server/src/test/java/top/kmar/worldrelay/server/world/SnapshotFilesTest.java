@@ -18,7 +18,6 @@ class SnapshotFilesTest {
 
     @TempDir
     Path root;
-    private final String compatibility = "b".repeat(64);
 
     /** 验证清单编解码、空目录和会话锁排除，并识别大小及时间戳相同的内容变化。 */
     @Test
@@ -29,7 +28,7 @@ class SnapshotFilesTest {
         Files.createDirectories(world.resolve("模组数据/空目录"));
         Path file = Files.writeString(world.resolve("模组数据/train.dat"), "one");
         var before = Files.getLastModifiedTime(file);
-        var manifest = SnapshotFiles.scan(world, compatibility);
+        var manifest = SnapshotFiles.scan(world);
         assertFalse(manifest.entries().stream().anyMatch(e -> e.path().equals("session.lock")));
         assertTrue(manifest.entries().stream().anyMatch(e -> e.path().equals("模组数据/空目录") && e.directory()));
         assertEquals(manifest, SnapshotManifest.decode(manifest.encode()));
@@ -45,11 +44,11 @@ class SnapshotFilesTest {
             assertThrows(IllegalArgumentException.class, () -> new SnapshotManifest.Entry(path, true, 0, ""), path);
         }
         var level = new SnapshotManifest.Entry("level.dat", false, 1, "c".repeat(64));
-        assertThrows(IllegalArgumentException.class, () -> new SnapshotManifest(compatibility,
+        assertThrows(IllegalArgumentException.class, () -> new SnapshotManifest(
             List.of(new SnapshotManifest.Entry("LEVEL.DAT", false, 1, "c".repeat(64)), level)));
-        assertThrows(IllegalArgumentException.class, () -> new SnapshotManifest(compatibility,
+        assertThrows(IllegalArgumentException.class, () -> new SnapshotManifest(
             List.of(level, new SnapshotManifest.Entry("missing/file", false, 1, "c".repeat(64)))));
-        assertThrows(IllegalArgumentException.class, () -> new SnapshotManifest(compatibility, List.of()));
+        assertThrows(IllegalArgumentException.class, () -> new SnapshotManifest(List.of()));
     }
 
     /** 验证旧写入者持有的文件句柄不能修改已封存的独立副本。 */
@@ -75,7 +74,36 @@ class SnapshotFilesTest {
         Files.writeString(source.resolve("level.dat"), "base");
         Files.createSymbolicLink(source.resolve("escape"), root);
         assertThrows(IOException.class, () -> SnapshotFiles.copyIsolated(source, root.resolve("rejected"), true));
-        assertThrows(IOException.class, () -> SnapshotFiles.scan(source, compatibility));
+        assertThrows(IOException.class, () -> SnapshotFiles.scan(source));
+    }
+
+    /** 已发布的旧格式清单仍按原始摘要读取，并继续识别文件损坏及新增文件。 */
+    @Test
+    void readsPublishedLegacyManifestAndVerifiesItsFileSet() throws Exception {
+        Path world = Files.createDirectory(root.resolve("legacy-world"));
+        Path level = Files.writeString(world.resolve("level.dat"), "level");
+        String fileHash = SnapshotFiles.hashFile(level);
+        var bytes = new java.io.ByteArrayOutputStream();
+        try (var output = new java.io.DataOutputStream(bytes)) {
+            output.writeInt(0x57525331);
+            output.writeUTF("b".repeat(64));
+            output.writeInt(1);
+            output.writeUTF("level.dat");
+            output.writeBoolean(false);
+            output.writeLong(5);
+            output.writeUTF(fileHash);
+        }
+        byte[] encoded = bytes.toByteArray();
+        Path file = Files.write(root.resolve("manifest.bin"), encoded);
+        var manifest = SnapshotManifest.read(file, SnapshotManifest.hash(encoded));
+        assertEquals(List.of(new SnapshotManifest.Entry("level.dat", false, 5, fileHash)), manifest.entries());
+        SnapshotFiles.verify(world, manifest);
+        Files.writeString(level, "other");
+        assertThrows(IOException.class, () -> SnapshotFiles.verify(world, manifest));
+        Files.writeString(level, "level");
+        Files.writeString(world.resolve("extra.dat"), "unexpected");
+        assertThrows(IOException.class, () -> SnapshotFiles.verify(world, manifest));
+        assertThrows(IOException.class, () -> SnapshotManifest.read(file, "0".repeat(64)));
     }
 
 }

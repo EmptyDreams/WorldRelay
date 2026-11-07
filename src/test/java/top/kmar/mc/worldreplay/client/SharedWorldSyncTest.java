@@ -39,18 +39,18 @@ class SharedWorldSyncTest {
         Files.writeString(world.resolve("level.dat"), "first-save");
         Files.writeString(world.resolve("session.lock"), "local-lock");
         Files.writeString(Files.createDirectory(world.resolve("mod-data")).resolve("session.lock"), "mod-owned-data");
-        assertThrows(IOException.class, () -> SharedWorldSync.prepareUpload(session.with(LocalWorldSession.Stage.STARTED, "world"), store, "a".repeat(64)));
-        assertThrows(IOException.class, () -> SharedWorldSync.prepareUpload(session.with(LocalWorldSession.Stage.STOPPING, "world"), store, "a".repeat(64)));
+        assertThrows(IOException.class, () -> SharedWorldSync.prepareUpload(session.with(LocalWorldSession.Stage.STARTED, "world"), store));
+        assertThrows(IOException.class, () -> SharedWorldSync.prepareUpload(session.with(LocalWorldSession.Stage.STOPPING, "world"), store));
         LocalWorldSession uploading;
         try (DirectoryLock ignored = DirectoryLock.create(world)) {
-            uploading = SharedWorldSync.prepareUpload(session, store, "a".repeat(64));
+            uploading = SharedWorldSync.prepareUpload(session, store);
         }
         store.write(uploading);
         assertEquals(uploading, store.read());
         assertEquals(7L, uploading.baseVersion());
         assertFalse(Files.exists(store.transfer(2, "upload").resolve("world/session.lock")));
         Files.writeString(world.resolve("level.dat"), "later-work-copy");
-        assertEquals(uploading, SharedWorldSync.prepareUpload(uploading, store, "a".repeat(64)));
+        assertEquals(uploading, SharedWorldSync.prepareUpload(uploading, store));
         var manifest = SnapshotManifest.read(store.transfer(2, "upload").resolve("manifest.bin"), uploading.manifestHash());
         SnapshotFiles.verify(store.transfer(2, "upload").resolve("world"), manifest);
         assertEquals("first-save", Files.readString(store.transfer(2, "upload").resolve("world/level.dat")));

@@ -10,7 +10,6 @@
   "worldrelay.creation.not_available": "此世界正在准备、同步或等待原房主恢复，请稍后刷新并重试。",
   "worldrelay.creation.connect_failed": "未能连接共享世界，请检查网络后重试。",
   "worldrelay.creation.tunnel_unavailable": "共享世界连接入口暂不可用，正在自动重试。托管资格和本地进度会保留，其他玩家暂时无法加入。",
-  "worldrelay.creation.mod_mismatch": "你与房主的 Minecraft 或模组版本不一致，请使用相同版本后重试。",
   "worldrelay.creation.ownership_lost": "此世界的托管资格已失效，已停止对外托管。本地进度会保留，请勿继续使用旧会话提交。",
   "worldrelay.disconnect.tunnel_identity_mismatch": "登录玩家与隧道认证账号不一致，请检查客户端账号。",
   "worldrelay.creation.downloading": "正在增量下载并校验世界存档……",

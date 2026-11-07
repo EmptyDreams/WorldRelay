@@ -23,12 +23,11 @@ final class TunnelApi {
     private TunnelApi() {
     }
 
-    static Ticket ticket(ClientConnectionSettings settings, String user, String world, LocalWorldSession owner, String compatibility, boolean consent) throws IOException {
+    static Ticket ticket(ClientConnectionSettings settings, String user, String world, LocalWorldSession owner, boolean consent) throws IOException {
         URI api = settings.serverUri();
         JsonObject request = owner == null ? new JsonObject() : WorldOwnershipClient.identity(owner);
         request.addProperty("role", owner == null ? "join" : "host");
         request.addProperty("worldId", world);
-        request.addProperty("compatibility", compatibility);
         if (owner == null) request.addProperty("allowNewPlayer", consent);
         try {
             JsonObject body = JsonParser.parseString(WorldOwnershipClient.post(settings, user, "tunnel-ticket", request, false)).getAsJsonObject();

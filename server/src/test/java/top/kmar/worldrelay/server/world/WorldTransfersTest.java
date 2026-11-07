@@ -23,7 +23,6 @@ class WorldTransfersTest {
 
     @TempDir
     Path root;
-    private final String compatibility = "a".repeat(64);
 
     private SshRegistrationConfig ssh() {
         return new SshRegistrationConfig(root.resolve("ssh/authorized_keys"), root.resolve("transfers"),
@@ -64,7 +63,7 @@ class WorldTransfersTest {
     }
 
     private String manifest(Path payload) throws IOException {
-        byte[] bytes = SnapshotFiles.scan(payload.resolve("world"), compatibility).encode();
+        byte[] bytes = SnapshotFiles.scan(payload.resolve("world")).encode();
         Files.write(payload.resolve("manifest.bin"), bytes);
         return SnapshotManifest.hash(bytes);
     }

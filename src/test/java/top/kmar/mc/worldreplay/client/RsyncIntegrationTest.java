@@ -53,28 +53,27 @@ class RsyncIntegrationTest {
         Files.createDirectories(original.resolve("模组数据/空目录"));
         Files.writeString(original.resolve("模组数据/列车.dat"), "train-one");
         Files.writeString(original.resolve("delete-on-next-handover.dat"), "obsolete");
-        String compatibility = "c".repeat(64);
-        var uploadA = SharedWorldSync.prepareUpload(a.with(LocalWorldSession.Stage.STOPPED, "world"), storeA, compatibility);
+        var uploadA = SharedWorldSync.prepareUpload(a.with(LocalWorldSession.Stage.STOPPED, "world"), storeA);
         storeA.write(uploadA);
         SharedWorldSync.upload(game, settingsA, alice, uploadA, storeA);
 
         var b = acquire(settingsB, bob, world);
         assertEquals(1L, b.baseVersion());
         b = b.with(LocalWorldSession.Stage.DOWNLOADING, "world");
-        Path bWorld = SharedWorldSync.download(game, settingsB, bob, b, storeB, compatibility);
+        Path bWorld = SharedWorldSync.download(game, settingsB, bob, b, storeB);
         assertArrayEquals(chunks, Files.readAllBytes(bWorld.resolve("region/r.0.0.mca")));
         assertEquals("train-one", Files.readString(bWorld.resolve("模组数据/列车.dat")));
         assertTrue(Files.isDirectory(bWorld.resolve("模组数据/空目录")));
         // 下载密钥已被撤销；破坏下载缓存后重试，必须签发新密钥并重新修复、校验缓存。
         Files.writeString(storeB.transfer(b.epoch(), "download").resolve("world/level.dat"), "corrupt-cache");
-        assertEquals(bWorld, SharedWorldSync.download(game, settingsB, bob, b, storeB, compatibility));
+        assertEquals(bWorld, SharedWorldSync.download(game, settingsB, bob, b, storeB));
         for (int index = 1024 * 1024; index < 1024 * 1024 + 4096; index++) {
             chunks[index] ^= 0x5a;
         }
         Files.write(bWorld.resolve("region/r.0.0.mca"), chunks);
         Files.writeString(bWorld.resolve("模组数据/列车.dat"), "train-two");
         Files.delete(bWorld.resolve("delete-on-next-handover.dat"));
-        var uploadB = SharedWorldSync.prepareUpload(b.with(LocalWorldSession.Stage.STOPPED, "world"), storeB, compatibility);
+        var uploadB = SharedWorldSync.prepareUpload(b.with(LocalWorldSession.Stage.STOPPED, "world"), storeB);
         storeB.write(uploadB);
         SharedWorldSync.upload(game, settingsB, bob, uploadB, storeB);
         // 成功响应丢失后的旧提交重试仍能确认，并且不会重新取得任何所有权。
@@ -82,14 +81,14 @@ class RsyncIntegrationTest {
 
         var nextA = acquire(settingsA, alice, world).with(LocalWorldSession.Stage.DOWNLOADING, "world");
         assertEquals(2L, nextA.baseVersion());
-        Path latest = SharedWorldSync.download(game, settingsA, alice, nextA, storeA, compatibility);
+        Path latest = SharedWorldSync.download(game, settingsA, alice, nextA, storeA);
         assertArrayEquals(chunks, Files.readAllBytes(latest.resolve("region/r.0.0.mca")));
         assertEquals("train-two", Files.readString(latest.resolve("模组数据/列车.dat")));
         assertFalse(Files.exists(latest.resolve("delete-on-next-handover.dat")));
         assertEquals("train-one", Files.readString(original.resolve("模组数据/列车.dat")));
         assertNotEquals(SnapshotFiles.hashFile(original.resolve("region/r.0.0.mca")), SnapshotFiles.hashFile(latest.resolve("region/r.0.0.mca")));
         // 最后从未启动游戏，仅在这个隔离服务中提交已下载的完整快照以完成清理。
-        var finalUpload = SharedWorldSync.prepareUpload(nextA.with(LocalWorldSession.Stage.STOPPED, "world"), storeA, compatibility);
+        var finalUpload = SharedWorldSync.prepareUpload(nextA.with(LocalWorldSession.Stage.STOPPED, "world"), storeA);
         storeA.write(finalUpload);
         SharedWorldSync.upload(game, settingsA, alice, finalUpload, storeA);
     }

@@ -17,7 +17,7 @@ public final class SnapshotFiles {
     private SnapshotFiles() {
     }
 
-    public static SnapshotManifest scan(Path world, String compatibility) throws IOException {
+    public static SnapshotManifest scan(Path world) throws IOException {
         List<SnapshotManifest.Entry> entries = new ArrayList<>();
         long[] bytes = {0};
         requireDirectory(world);
@@ -51,14 +51,14 @@ public final class SnapshotFiles {
         });
         entries.sort(Comparator.comparing(SnapshotManifest.Entry::path));
         try {
-            return new SnapshotManifest(compatibility, entries);
+            return new SnapshotManifest(entries);
         } catch (IllegalArgumentException failure) {
             throw new IOException("Invalid world snapshot");
         }
     }
 
     public static void verify(Path world, SnapshotManifest expected) throws IOException {
-        if (!scan(world, expected.compatibility()).equals(expected)) throw new IOException("World snapshot checksum or file set mismatch");
+        if (!scan(world).equals(expected)) throw new IOException("World snapshot checksum or file set mismatch");
     }
 
     public static String hashFile(Path file) throws IOException {

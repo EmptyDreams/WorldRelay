@@ -128,7 +128,7 @@ class CreateSchematicTest {
         assertEquals(new BlockPos(4, 1, 1), SchematicItem.loadSchematic(second, blueprint("Alice", "house.nbt")).getSize());
 
         Path firstRoot = first.getServer().getWorldPath(LevelResource.ROOT);
-        var manifest = SnapshotFiles.scan(firstRoot, "a".repeat(64));
+        var manifest = SnapshotFiles.scan(firstRoot);
         Path nextHost = temporary.resolve("next-host");
         SnapshotFiles.copyWorld(firstRoot, nextHost);
         SnapshotFiles.verify(nextHost, manifest);

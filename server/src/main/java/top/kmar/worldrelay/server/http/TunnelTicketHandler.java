@@ -49,13 +49,13 @@ public final class TunnelTicketHandler implements HttpHandler {
             reader.endObject();
             reader.finish();
             boolean host = "host".equals(fields.get("role"));
-            Set<String> expected = host ? Set.of("role", "worldId", "compatibility", "deviceId", "sessionId", "epoch")
-                : Set.of("role", "worldId", "compatibility", "allowNewPlayer");
+            Set<String> expected = host ? Set.of("role", "worldId", "deviceId", "sessionId", "epoch")
+                : Set.of("role", "worldId", "allowNewPlayer");
             if (!fields.keySet().equals(expected) || !host && !"join".equals(fields.get("role"))) throw new IllegalArgumentException();
             String world = fields.get("worldId");
             WorldStore.validateId(world);
-            var grant = host ? gateway.host(world, new WorldStore.Identity(exchange.getPrincipal().getUsername(), fields.get("deviceId"), fields.get("sessionId"), epoch), fields.get("compatibility"))
-                : gateway.join(world, exchange.getPrincipal().getUsername(), fields.get("compatibility"), Boolean.parseBoolean(fields.get("allowNewPlayer")));
+            var grant = host ? gateway.host(world, new WorldStore.Identity(exchange.getPrincipal().getUsername(), fields.get("deviceId"), fields.get("sessionId"), epoch))
+                : gateway.join(world, exchange.getPrincipal().getUsername(), Boolean.parseBoolean(fields.get("allowNewPlayer")));
             JsonWriter writer = new JsonWriter();
             gateway.describe(writer, grant);
             HttpResponses.bytes(exchange, 200, "application/json; charset=utf-8", writer.finish().getBytes(StandardCharsets.UTF_8));

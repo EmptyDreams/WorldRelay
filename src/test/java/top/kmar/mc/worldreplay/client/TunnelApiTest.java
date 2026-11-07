@@ -35,12 +35,12 @@ class TunnelApiTest {
             String common = "\"ticket\":\"" + "b".repeat(43) + "\",\"expiresAt\":\"" + Instant.now().plusSeconds(60) + "\"";
             reply.set("{" + common + ",\"mode\":\"wss\",\"path\":\"/api/v1/tunnel\"}");
             String world = UUID.randomUUID().toString();
-            var wss = TunnelApi.ticket(settings, "Guest", world, null, "c".repeat(64), false);
+            var wss = TunnelApi.ticket(settings, "Guest", world, null, false);
             assertEquals("ws", wss.endpoint().uri().getScheme());
             assertEquals(server.getAddress().getPort(), wss.endpoint().port());
             assertFalse(request.get().get("allowNewPlayer").getAsBoolean());
             reply.set("{" + common + ",\"mode\":\"tcp\",\"host\":\"relay.example.com\",\"port\":2222,\"fingerprint\":\"" + "d".repeat(64) + "\"}");
-            var tcp = TunnelApi.ticket(settings, "Guest", world, null, "c".repeat(64), true);
+            var tcp = TunnelApi.ticket(settings, "Guest", world, null, true);
             assertEquals("tls://relay.example.com:2222", tcp.endpoint().uri().toString());
             assertEquals("d".repeat(64), tcp.endpoint().fingerprint());
             assertTrue(request.get().get("allowNewPlayer").getAsBoolean());

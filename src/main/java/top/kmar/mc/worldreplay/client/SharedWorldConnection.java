@@ -43,11 +43,11 @@ public final class SharedWorldConnection implements AutoCloseable {
     }
 
     /** 在 IO 线程预先完成中心配对，再让原版连接本机入口。 */
-    static SharedWorldConnection prepare(Screen parent, ClientConnectionSettings settings, String user, String world, String name, String compatibility) throws Exception {
+    static SharedWorldConnection prepare(Screen parent, ClientConnectionSettings settings, String user, String world, String name) throws Exception {
         var connection = new SharedWorldConnection(parent, world, name);
         try {
             connection.consentKey = settings.serverUri() + "/" + world + "/" + Minecraft.getInstance().getUser().getProfileId();
-            var ticket = TunnelApi.ticket(settings, user, world, null, compatibility, CREATION_CONSENTS.contains(connection.consentKey));
+            var ticket = TunnelApi.ticket(settings, user, world, null, CREATION_CONSENTS.contains(connection.consentKey));
             var stream = connection.connector.connect(ticket.endpoint(), ticket.token(), null).get(10, TimeUnit.SECONDS);
             connection.local = connection.connector.listen(stream).get(10, TimeUnit.SECONDS);
             return connection;

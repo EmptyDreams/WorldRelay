@@ -46,7 +46,7 @@ public final class TunnelGateway implements AutoCloseable {
 
     }
 
-    private record Ticket(Role role, String world, WorldStore.Identity owner, String compatibility, Lease lease, Pending pending,
+    private record Ticket(Role role, String world, WorldStore.Identity owner, Lease lease, Pending pending,
                           String guestUser, boolean consent, long expires) {
 
     }
@@ -57,17 +57,16 @@ public final class TunnelGateway implements AutoCloseable {
 
     private final class Lease {
 
-        final String world, id = UUID.randomUUID().toString(), compatibility;
+        final String world, id = UUID.randomUUID().toString();
         final WorldStore.Identity owner;
         final Peer control;
         final AtomicBoolean active = new AtomicBoolean(true);
         volatile boolean published;
         final Set<Peer> connections = ConcurrentHashMap.newKeySet();
 
-        Lease(String world, WorldStore.Identity owner, String compatibility, Peer control) {
+        Lease(String world, WorldStore.Identity owner, Peer control) {
             this.world = world;
             this.owner = owner;
-            this.compatibility = compatibility;
             this.control = control;
             connections.add(control);
         }
@@ -162,24 +161,21 @@ public final class TunnelGateway implements AutoCloseable {
         return (InetSocketAddress) listener.localAddress();
     }
 
-    public Grant host(String world, WorldStore.Identity owner, String compatibility) throws WorldAccessException {
-        checkCompatibility(compatibility);
+    public Grant host(String world, WorldStore.Identity owner) throws WorldAccessException {
         synchronized (worlds) {
             worlds.checkTunnelOwner(world, owner);
-            Grant grant = issue(new Ticket(Role.HOST, world, owner, compatibility, null, null, null, false, ticker.getAsLong() + TimeUnit.SECONDS.toNanos(60)));
+            Grant grant = issue(new Ticket(Role.HOST, world, owner, null, null, null, false, ticker.getAsLong() + TimeUnit.SECONDS.toNanos(60)));
             latestHostTickets.put(world, grant.token());
             return grant;
         }
     }
 
-    public Grant join(String world, String username, String compatibility, boolean consent) throws WorldAccessException {
+    public Grant join(String world, String username, boolean consent) throws WorldAccessException {
         top.kmar.worldrelay.server.auth.UserStore.validateUsername(username);
-        checkCompatibility(compatibility);
         WorldStore.Identity owner = worlds.joinTunnelOwner(world);
         Lease lease = leases.get(world);
         if (lease == null || !lease.current() || !lease.owner.equals(owner)) throw unavailable();
-        if (!lease.compatibility.equals(compatibility)) throw new WorldAccessException(409, "MOD_MISMATCH", "Host and guest mod versions differ");
-        return issue(new Ticket(Role.JOIN, world, owner, compatibility, lease, null, username, consent, ticker.getAsLong() + TimeUnit.SECONDS.toNanos(60)));
+        return issue(new Ticket(Role.JOIN, world, owner, lease, null, username, consent, ticker.getAsLong() + TimeUnit.SECONDS.toNanos(60)));
     }
 
     public OwnershipView ready(String world, WorldStore.Identity owner, String registration) throws IOException, WorldAccessException {
@@ -213,10 +209,6 @@ public final class TunnelGateway implements AutoCloseable {
         String token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
         tickets.put(token, ticket);
         return new Grant(token, Instant.now().plusSeconds(60));
-    }
-
-    private static void checkCompatibility(String compatibility) {
-        if (compatibility == null || !compatibility.matches("[0-9a-f]{64}")) throw new IllegalArgumentException("Invalid compatibility fingerprint");
     }
 
     private static WorldAccessException unavailable() {
@@ -283,7 +275,7 @@ public final class TunnelGateway implements AutoCloseable {
                 return;
             }
             if (ticket.role == Role.HOST) {
-                lease = new Lease(ticket.world, ticket.owner, ticket.compatibility, this);
+                lease = new Lease(ticket.world, ticket.owner, this);
                 controller = true;
                 Lease old = leases.put(ticket.world, lease);
                 if (old != null) old.close();
@@ -300,7 +292,7 @@ public final class TunnelGateway implements AutoCloseable {
                     return;
                 }
                 if (ticket.role == Role.JOIN) {
-                    Grant attach = issue(new Ticket(Role.ATTACH, ticket.world, ticket.owner, ticket.compatibility, lease,
+                    Grant attach = issue(new Ticket(Role.ATTACH, ticket.world, ticket.owner, lease,
                         new Pending(this, lease), ticket.guestUser, ticket.consent, ticker.getAsLong() + TimeUnit.SECONDS.toNanos(10)));
                     TunnelFrames.send(lease.control.channel(), TunnelWire.OPEN, attach.token() + "\n" + ticket.guestUser + "\n" + (ticket.consent ? "1" : "0"));
                 } else {

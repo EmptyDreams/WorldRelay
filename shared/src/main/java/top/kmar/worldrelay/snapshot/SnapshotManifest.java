@@ -10,13 +10,14 @@ import java.security.NoSuchAlgorithmException;
 import java.util.*;
 
 /** 两端使用同一有界格式。清单包含空目录、完整文件集合和每个文件的 SHA-256。 */
-public record SnapshotManifest(String compatibility, List<Entry> entries) {
+public record SnapshotManifest(List<Entry> entries) {
 
     public static final String FILE_NAME = "manifest.bin";
     public static final int MAX_ENTRIES = 200_000;
     public static final long MAX_BYTES = 100L * 1024 * 1024 * 1024;
     public static final int MAX_MANIFEST_BYTES = 64 * 1024 * 1024;
-    private static final int MAGIC = 0x57525331;
+    private static final int MAGIC = 0x57525332;
+    private static final int LEGACY_MAGIC = 0x57525331;
 
     public record Entry(String path, boolean directory, long size, String sha256) {
 
@@ -30,7 +31,6 @@ public record SnapshotManifest(String compatibility, List<Entry> entries) {
     }
 
     public SnapshotManifest {
-        if (compatibility == null || !compatibility.matches("[0-9a-f]{64}")) throw new IllegalArgumentException("Missing compatibility fingerprint");
         entries = List.copyOf(entries);
         if (entries.size() > MAX_ENTRIES) throw new IllegalArgumentException("Too many snapshot entries");
         Map<String, Entry> names = new HashMap<>();
@@ -60,7 +60,6 @@ public record SnapshotManifest(String compatibility, List<Entry> entries) {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (DataOutputStream output = new DataOutputStream(bytes)) {
             output.writeInt(MAGIC);
-            output.writeUTF(compatibility);
             output.writeInt(entries.size());
             for (Entry entry : entries) {
                 output.writeUTF(entry.path);
@@ -85,8 +84,11 @@ public record SnapshotManifest(String compatibility, List<Entry> entries) {
     public static SnapshotManifest decode(byte[] bytes) throws IOException {
         if (bytes.length > MAX_MANIFEST_BYTES) throw new IOException("Manifest exceeds quota");
         try (DataInputStream input = new DataInputStream(new ByteArrayInputStream(bytes))) {
-            if (input.readInt() != MAGIC) throw new IOException("Unsupported snapshot format");
-            String compatibility = input.readUTF();
+            int format = input.readInt();
+            if (format == LEGACY_MAGIC) {
+                // 已发布快照仍按原始字节校验摘要；旧清单的环境指纹不再参与存档加载。
+                input.skipNBytes(input.readUnsignedShort());
+            } else if (format != MAGIC) throw new IOException("Unsupported snapshot format");
             int count = input.readInt();
             if (count < 0 || count > MAX_ENTRIES) throw new IOException("Invalid manifest length");
             List<Entry> entries = new ArrayList<>();
@@ -94,7 +96,7 @@ public record SnapshotManifest(String compatibility, List<Entry> entries) {
                 entries.add(new Entry(input.readUTF(), input.readBoolean(), input.readLong(), input.readUTF()));
             }
             if (input.read() != -1) throw new IOException("Trailing manifest bytes");
-            return new SnapshotManifest(compatibility, entries);
+            return new SnapshotManifest(entries);
         } catch (IllegalArgumentException | ArithmeticException failure) {
             throw new IOException("Invalid snapshot manifest");
         }

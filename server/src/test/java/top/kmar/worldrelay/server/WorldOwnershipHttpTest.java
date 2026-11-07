@@ -132,7 +132,7 @@ class WorldOwnershipHttpTest {
             assertEquals(200, retry.statusCode());
             assertEquals(acquired.body(), retry.body());
             assertFalse(list(client, service).contains(session));
-            String ticketFields = identity + ",\"role\":\"host\",\"compatibility\":\"" + "a".repeat(64) + "\"";
+            String ticketFields = identity + ",\"role\":\"host\"";
             error(send(client, post(service, "tunnel-ticket", ticketFields, auth)),
                 409, "INVALID_PHASE");
             var starting = send(client, post(service, "ready", identity + ",\"stage\":\"SAVE_SYNCED\",\"baseVersion\":null", auth));

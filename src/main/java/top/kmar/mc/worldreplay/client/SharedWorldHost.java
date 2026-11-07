@@ -27,7 +27,7 @@ final class SharedWorldHost implements AutoCloseable {
 
     @SuppressWarnings("resource")
         // 准入记录交给 Session，在本机连接关闭时清理。
-    SharedWorldHost(ClientConnectionSettings settings, String user, LocalWorldSession owner, String compatibility, int port, Runnable fenced) {
+    SharedWorldHost(ClientConnectionSettings settings, String user, LocalWorldSession owner, int port, Runnable fenced) {
         retries.scheduleWithFixedDelay(() -> {
             if (closed.get() || control != null && control.isOpen() && !republish) return;
             try {
@@ -40,7 +40,7 @@ final class SharedWorldHost implements AutoCloseable {
                     warned = false;
                     return;
                 }
-                TunnelApi.Ticket ticket = TunnelApi.ticket(settings, user, owner.worldId(), owner, compatibility, false);
+                TunnelApi.Ticket ticket = TunnelApi.ticket(settings, user, owner.worldId(), owner, false);
                 var connected = await(connector.connect(ticket.endpoint(), ticket.token(), request -> {
                     if (closed.get()) return;
                     String[] fields = request.split("\n", -1);

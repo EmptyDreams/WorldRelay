@@ -76,7 +76,7 @@ class WorldTransferHttpTest {
                 payload = paths.filter(path -> path.getFileName().toString().equals("payload")).findFirst().orElseThrow();
             }
             Files.writeString(payload.resolve("world/level.dat"), "synthetic-level");
-            byte[] manifest = SnapshotFiles.scan(payload.resolve("world"), "e".repeat(64)).encode();
+            byte[] manifest = SnapshotFiles.scan(payload.resolve("world")).encode();
             Files.write(payload.resolve("manifest.bin"), manifest);
             hash = SnapshotManifest.hash(manifest);
             var committed = poll(client, service, "commit", "{" + transfer + ",\"manifestHash\":\"" + hash + "\"}", auth);

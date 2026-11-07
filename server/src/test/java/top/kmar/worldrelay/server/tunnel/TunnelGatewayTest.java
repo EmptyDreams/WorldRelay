@@ -26,7 +26,6 @@ import static org.junit.jupiter.api.Assertions.*;
 @Timeout(40)
 class TunnelGatewayTest {
 
-    private static final String COMPATIBILITY = "a".repeat(64);
     @TempDir
     Path temporary;
 
@@ -83,7 +82,7 @@ class TunnelGatewayTest {
         }
 
         TunnelConnector.Session host(World world, int localPort) throws Exception {
-            var grant = gateway.host(world.id, world.owner, COMPATIBILITY);
+            var grant = gateway.host(world.id, world.owner);
             var endpoint = endpoint(grant);
             var connector = connector();
             var control = connector.connect(endpoint, grant.token(), message -> {
@@ -102,7 +101,7 @@ class TunnelGatewayTest {
         }
 
         Socket guest(World world) throws Exception {
-            var grant = gateway.join(world.id, "Guest", COMPATIBILITY, false);
+            var grant = gateway.join(world.id, "Guest", false);
             var connector = connector();
             var session = connector.connect(endpoint(grant), grant.token(), null).get(10, TimeUnit.SECONDS);
             var address = connector.listen(session).get(10, TimeUnit.SECONDS);
@@ -208,26 +207,25 @@ class TunnelGatewayTest {
         }
     }
 
-    /** 注册票据只能使用一次且会过期；错误任期和不兼容客户端不能获得有效加入资格。 */
+    /** 注册票据只能使用一次且会过期，错误任期和被新登记替换的旧票据无法使用。 */
     @ParameterizedTest
     @EnumSource(TunnelConfig.Mode.class)
     void scopesAndExpiresTickets(TunnelConfig.Mode mode) throws Exception {
         try (var fixture = new Fixture(mode)) {
             var world = fixture.world();
-            var grant = fixture.gateway.host(world.id, world.owner, COMPATIBILITY);
+            var grant = fixture.gateway.host(world.id, world.owner);
             var connector = fixture.connector();
             var endpoint = fixture.endpoint(grant);
             var control = connector.connect(endpoint, grant.token(), ignored -> {}).get(10, TimeUnit.SECONDS);
             fixture.gateway.ready(world.id, world.owner, control.registrationId());
             assertThrows(ExecutionException.class, () -> connector.connect(endpoint, grant.token(), null).get(10, TimeUnit.SECONDS));
-            var expired = fixture.gateway.host(world.id, world.owner, COMPATIBILITY);
+            var expired = fixture.gateway.host(world.id, world.owner);
             fixture.clock.addAndGet(TimeUnit.SECONDS.toNanos(61));
             assertThrows(ExecutionException.class, () -> connector.connect(endpoint, expired.token(), null).get(10, TimeUnit.SECONDS));
             var stale = new WorldStore.Identity("Host", world.owner.deviceId(), world.owner.sessionId(), world.owner.epoch() + 1);
-            assertEquals("STALE_EPOCH", assertThrows(WorldAccessException.class, () -> fixture.gateway.host(world.id, stale, COMPATIBILITY)).code());
-            assertEquals("MOD_MISMATCH", assertThrows(WorldAccessException.class, () -> fixture.gateway.join(world.id, "Guest", "b".repeat(64), false)).code());
-            var older = fixture.gateway.host(world.id, world.owner, COMPATIBILITY);
-            var latest = fixture.gateway.host(world.id, world.owner, COMPATIBILITY);
+            assertEquals("STALE_EPOCH", assertThrows(WorldAccessException.class, () -> fixture.gateway.host(world.id, stale)).code());
+            var older = fixture.gateway.host(world.id, world.owner);
+            var latest = fixture.gateway.host(world.id, world.owner);
             var newControl = connector.connect(endpoint, latest.token(), ignored -> {}).get(10, TimeUnit.SECONDS);
             fixture.gateway.ready(world.id, world.owner, newControl.registrationId());
             assertThrows(ExecutionException.class, () -> connector.connect(endpoint, older.token(), null).get(10, TimeUnit.SECONDS));
@@ -241,12 +239,12 @@ class TunnelGatewayTest {
     void replacesRegistrationAndRejectsLateAttachments(TunnelConfig.Mode mode) throws Exception {
         try (var fixture = new Fixture(mode); var echo = new Echo(0)) {
             var world = fixture.world();
-            var oldGrant = fixture.gateway.host(world.id, world.owner, COMPATIBILITY);
+            var oldGrant = fixture.gateway.host(world.id, world.owner);
             var oldConnector = fixture.connector();
             var attach = new CompletableFuture<String>();
             var old = oldConnector.connect(fixture.endpoint(oldGrant), oldGrant.token(), message -> attach.complete(message.split("\n")[0])).get(10, TimeUnit.SECONDS);
             fixture.gateway.ready(world.id, world.owner, old.registrationId());
-            var join = fixture.gateway.join(world.id, "Guest", COMPATIBILITY, false);
+            var join = fixture.gateway.join(world.id, "Guest", false);
             var waiting = fixture.connector().connect(fixture.endpoint(join), join.token(), null);
             String oldAttach = attach.get(10, TimeUnit.SECONDS);
             fixture.host(world, echo.port());
@@ -280,7 +278,7 @@ class TunnelGatewayTest {
             fixture.host(world, echo.port());
             assertEquals("RUNNING", fixture.worlds.list().getFirst().status());
             fixture.worlds.stop(world.id, world.owner, WorldStore.StopStage.BEGIN, null);
-            assertThrows(WorldAccessException.class, () -> fixture.gateway.join(world.id, "Guest", COMPATIBILITY, false));
+            assertThrows(WorldAccessException.class, () -> fixture.gateway.join(world.id, "Guest", false));
             assertEquals("STOPPING", fixture.worlds.list().getFirst().status());
             assertEquals(world.owner.epoch(), fixture.worlds.heartbeat(world.id, world.owner, 1).epoch());
         }
@@ -292,7 +290,7 @@ class TunnelGatewayTest {
         String fingerprint;
         try (var fixture = new Fixture(TunnelConfig.Mode.TCP)) {
             var world = fixture.world();
-            var grant = fixture.gateway.host(world.id, world.owner, COMPATIBILITY);
+            var grant = fixture.gateway.host(world.id, world.owner);
             var endpoint = fixture.endpoint(grant);
             fingerprint = endpoint.fingerprint();
             var connector = fixture.connector();

@@ -10,7 +10,6 @@
   "worldrelay.creation.not_available": "This world is preparing, synchronizing or waiting for its host to recover. Refresh and retry later.",
   "worldrelay.creation.connect_failed": "Could not connect to the shared world. Check your network and retry.",
   "worldrelay.creation.tunnel_unavailable": "The shared world connection is unavailable and will retry automatically. Ownership and local progress are retained; other players cannot join yet.",
-  "worldrelay.creation.mod_mismatch": "Your Minecraft or mod versions differ from the host. Use matching versions and retry.",
   "worldrelay.creation.ownership_lost": "Ownership is no longer valid and hosting has stopped. Local progress is retained. Do not submit using the old session.",
   "worldrelay.disconnect.tunnel_identity_mismatch": "The login player does not match the authenticated tunnel account. Check your client account.",
   "worldrelay.creation.downloading": "Downloading world changes and verifying the complete save...",

@@ -23,7 +23,7 @@ final class SharedWorldSync {
 
     static Path download(
         Path game, ClientConnectionSettings settings, String user, LocalWorldSession session,
-        LocalWorldSessionStore store, String compatibility
+        LocalWorldSessionStore store
     ) throws IOException {
         if (session.baseVersion() == null) throw new IOException("No authoritative version");
         Path payload = store.transfer(session.epoch(), "download");
@@ -39,7 +39,6 @@ final class SharedWorldSync {
         } catch (IOException ignored) { /* 未下载完成的缓存必须经过 rsync 修复并重新校验。 */ }
         if (!verified) run(game, settings, store, payload, ticket, false);
         SnapshotManifest manifest = SnapshotManifest.read(payload.resolve(SnapshotManifest.FILE_NAME), expected);
-        if (!manifest.compatibility().equals(compatibility)) throw new IOException("World requires different Minecraft or mod versions");
         SnapshotFiles.verify(payload.resolve("world"), manifest);
         store.cache(session, "download", expected);
         Path target = store.saves(session.epoch()).resolve(session.folder());
@@ -60,7 +59,7 @@ final class SharedWorldSync {
         return target;
     }
 
-    static LocalWorldSession prepareUpload(LocalWorldSession session, LocalWorldSessionStore store, String compatibility) throws IOException {
+    static LocalWorldSession prepareUpload(LocalWorldSession session, LocalWorldSessionStore store) throws IOException {
         if (session.stage() == LocalWorldSession.Stage.UPLOADING) return session;
         if (session.stage() != LocalWorldSession.Stage.STOPPED) throw new IOException("World has not stopped safely");
         Path payload = store.transfer(session.epoch(), "upload");
@@ -72,7 +71,7 @@ final class SharedWorldSync {
             Files.move(copy, world, StandardCopyOption.ATOMIC_MOVE);
             Files.delete(temporary);
         }
-        SnapshotManifest manifest = SnapshotFiles.scan(world, compatibility);
+        SnapshotManifest manifest = SnapshotFiles.scan(world);
         byte[] bytes = manifest.encode();
         // manifest 是二进制，不能经字符串编码写回。
         Path temporary = Files.createTempFile(payload, ".manifest-", ".tmp");

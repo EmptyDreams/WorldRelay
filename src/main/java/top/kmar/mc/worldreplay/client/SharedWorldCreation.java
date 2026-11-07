@@ -13,7 +13,6 @@ import net.minecraft.world.level.storage.LevelResource;
 import net.minecraft.world.level.storage.LevelStorageSource;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
-import net.neoforged.fml.ModList;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
@@ -22,10 +21,8 @@ import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import top.kmar.mc.worldreplay.WorldRelay;
 import top.kmar.mc.worldreplay.playerdata.MissingPlayerDataConfirmation;
 import top.kmar.mc.worldreplay.playerdata.SharedPlayerData;
-import top.kmar.worldrelay.snapshot.SnapshotManifest;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.UUID;
@@ -177,9 +174,7 @@ public final class SharedWorldCreation {
                 WorldRelay.LOGGER.warn("Shared world acquisition did not complete ({})", failure.getClass().getSimpleName());
                 client.execute(() -> {
                     joining = false;
-                    String message = failure instanceof WorldOwnershipClient.RequestException request && request.code().equals("MOD_MISMATCH")
-                        ? "mod_mismatch" : "failed";
-                    show(parent, message, false, () -> join(parent, worldId, worldName));
+                    show(parent, "failed", false, () -> join(parent, worldId, worldName));
                 });
             }
         });
@@ -187,7 +182,7 @@ public final class SharedWorldCreation {
 
     @SuppressWarnings("resource") // 所有权交给连接上下文，在取消、失败或断开事件中关闭。
     private static void joinGuest(Screen parent, ClientConnectionSettings settings, String user, String worldId, String worldName) throws Exception {
-        var connection = SharedWorldConnection.prepare(parent, settings, user, worldId, worldName, compatibility());
+        var connection = SharedWorldConnection.prepare(parent, settings, user, worldId, worldName);
         Minecraft.getInstance().execute(() -> {
             joining = false;
             try {
@@ -201,12 +196,6 @@ public final class SharedWorldCreation {
 
     private static void show(Screen parent, String message, boolean pending, Runnable retry) {
         Minecraft.getInstance().setScreen(new SharedWorldOperationScreen(parent, message, pending, retry));
-    }
-
-    private static String compatibility() {
-        String mods = ModList.get().getMods().stream().map(mod -> mod.getModId() + "=" + mod.getVersion())
-            .sorted().collect(java.util.stream.Collectors.joining("\n"));
-        return SnapshotManifest.hash(("Minecraft=1.21.1\n" + mods).getBytes(StandardCharsets.UTF_8));
     }
 
     public static final class Creation {
@@ -294,7 +283,7 @@ public final class SharedWorldCreation {
                 try {
                     save(session.with(LocalWorldSession.Stage.DOWNLOADING, "world"));
                     Path game = Minecraft.getInstance().gameDirectory.toPath();
-                    worldDirectory = SharedWorldSync.download(game, settings, user, session, store, compatibility());
+                    worldDirectory = SharedWorldSync.download(game, settings, user, session, store);
                     var playerData = new SharedPlayerData(worldDirectory);
                     var check = playerData.check(profile);
                     if (check.status() == SharedPlayerData.Status.ERROR) throw new IOException("Unreadable shared player data");
@@ -347,7 +336,7 @@ public final class SharedWorldCreation {
                     if (session.stage() == LocalWorldSession.Stage.STOPPED) {
                         // 已停服记录可以在下次客户端启动后重试；崩溃遗留 STARTED/STOPPING 不会走这里。
                         try (DirectoryLock ignored = DirectoryLock.create(worldDirectory)) {
-                            save(SharedWorldSync.prepareUpload(session, store, compatibility()));
+                            save(SharedWorldSync.prepareUpload(session, store));
                         }
                     }
                     // 请求丢失时可重复 BEGIN；在上传前明确撤下房主端点。
@@ -569,7 +558,7 @@ public final class SharedWorldCreation {
             if (creation.tunnelHost == null && now >= creation.nextHostAttempt) {
                 creation.nextHostAttempt = now + 5_000;
                 if (server.isPublished() || server.publishServer(null, server.getWorldData().isAllowCommands(), HttpUtil.getAvailablePort())) {
-                    creation.tunnelHost = new SharedWorldHost(creation.settings, creation.user, creation.session, compatibility(), server.getPort(),
+                    creation.tunnelHost = new SharedWorldHost(creation.settings, creation.user, creation.session, server.getPort(),
                         () -> client.execute(() -> {
                             creation.fenced = true;
                             client.gui.getChat().addMessage(Component.translatable("worldrelay.creation.ownership_lost"));

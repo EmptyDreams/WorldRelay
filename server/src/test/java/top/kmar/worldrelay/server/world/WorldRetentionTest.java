@@ -94,7 +94,7 @@ class WorldRetentionTest {
         Path payload = store.candidateDirectory(world, owner).resolve("payload");
         Files.createDirectories(payload.resolve("world"));
         Files.writeString(payload.resolve("world/level.dat"), at);
-        byte[] manifest = SnapshotFiles.scan(payload.resolve("world"), "a".repeat(64)).encode();
+        byte[] manifest = SnapshotFiles.scan(payload.resolve("world")).encode();
         Files.write(payload.resolve("manifest.bin"), manifest);
         String upload = id(), hash = SnapshotManifest.hash(manifest);
         store.publishSnapshot(world, owner, base, upload, hash, payload);
