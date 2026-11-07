@@ -15,7 +15,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
-/** API Token 只用于 HTTPS 取票；隧道握手使用短时、单次、限定用途的票据。 */
+/** API Token 只用于 API 取票；隧道握手使用短时、单次、限定用途的票据。 */
 public final class TunnelTicketHandler implements HttpHandler {
 
     private final TunnelGateway gateway;

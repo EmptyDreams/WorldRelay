@@ -25,8 +25,6 @@ final class TunnelApi {
 
     static Ticket ticket(ClientConnectionSettings settings, String user, String world, LocalWorldSession owner, String compatibility, boolean consent) throws IOException {
         URI api = settings.serverUri();
-        if (!"https".equals(api.getScheme()) && !TunnelEndpoint.loopback(api.getHost()))
-            throw new IOException("Tunnel credentials require an HTTPS API");
         JsonObject request = owner == null ? new JsonObject() : WorldOwnershipClient.identity(owner);
         request.addProperty("role", owner == null ? "join" : "host");
         request.addProperty("worldId", world);

@@ -6,7 +6,6 @@ import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
 import top.kmar.mc.worldreplay.sync.RsyncMode;
 
-import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -50,14 +49,6 @@ class TunnelApiTest {
         } finally {
             server.stop(0);
         }
-    }
-
-    /** 公网明文 API 无法可信地分发隧道凭据或证书指纹，因此在发送请求前拒绝。 */
-    @SuppressWarnings("HttpUrlsUsage") // 验证拒绝明文地址；不会发起公网请求。
-    @Test
-    void requiresHttpsToObtainPublicTunnelCredentials() {
-        var settings = new ClientConnectionSettings("http://relay.example.com", 80, "a".repeat(43), RsyncMode.AUTO, "", "");
-        assertThrows(IOException.class, () -> TunnelApi.ticket(settings, "Guest", UUID.randomUUID().toString(), null, "c".repeat(64), false));
     }
 
     /** 心跳恢复但入口尚未重新确认时通知房主重新发布，恢复 RUNNING 后不重复登记。 */
