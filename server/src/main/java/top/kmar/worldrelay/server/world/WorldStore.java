@@ -53,7 +53,7 @@ public final class WorldStore implements AutoCloseable {
         } catch (WorldAccessException ignored) { /* 旧登记不能撤下新任期。 */ }
     }
 
-    // 保留取消审计和获取请求墓碑；达到上限时拒绝取消，不丢弃历史或释放所有权。
+    // UTF-8 元数据总上限；提交回执从旧到新淘汰，当前权威版本及取消审计保留。
     static final int MAX_METADATA_BYTES = 1024 * 1024;
     private final Path root;
     private final FileChannel lockChannel;
@@ -401,17 +401,64 @@ public final class WorldStore implements AutoCloseable {
         return root;
     }
 
-    /** 在元数据锁内重新判断，避免清理与发布或不确定写盘结果交错。提交回执始终保留。 */
+    /** 备份索引与近期提交回执合并；读取不占用全局所有权锁，旧索引先于回执淘汰持久化。 */
+    List<SnapshotReference> snapshotReferences(WorldMetadata metadata) throws IOException {
+        Map<String, SnapshotReference> references = new HashMap<>();
+        Path index = root.resolve(metadata.worldId()).resolve("snapshot-index");
+        if (Files.exists(index, LinkOption.NOFOLLOW_LINKS)) {
+            requireLocalPath(index, true);
+            try (var files = Files.newDirectoryStream(index, "*.json")) {
+                for (Path file : files) {
+                    String id = file.getFileName().toString().replaceFirst("\\.json$", "");
+                    if (isNotId(id)) continue;
+                    requireLocalPath(file, false);
+                    var reference = SnapshotReference.read(file);
+                    if (!id.equals(reference.uploadId())) throw new IOException("Snapshot index ID mismatch");
+                    if (metadata.state().committedVersion() != null && reference.version() <= metadata.state().committedVersion())
+                        references.put(id, reference);
+                }
+            }
+        }
+        metadata.commits().forEach(commit -> references.put(commit.uploadId(), SnapshotReference.from(commit)));
+        return references.values().stream().sorted(Comparator.comparingLong(SnapshotReference::version)).toList();
+    }
+
+    private Path snapshotIndex(String worldId, String uploadId) {
+        return root.resolve(worldId).resolve("snapshot-index").resolve(uploadId + ".json");
+    }
+
+    synchronized void forgetMissingSnapshotIndex(String worldId, String uploadId) throws IOException {
+        ensureOpen();
+        Entry entry = worlds.get(worldId);
+        if (entry == null || entry.unavailable
+            || !Files.notExists(root.resolve(worldId).resolve("snapshots").resolve(uploadId), LinkOption.NOFOLLOW_LINKS)) return;
+        Path file = snapshotIndex(worldId, uploadId);
+        if (Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
+            requireLocalPath(file, false);
+            Files.delete(file);
+            SnapshotFiles.forceDirectory(file.getParent());
+        }
+    }
+
+    /** 在元数据锁内重新判断，避免清理与发布或不确定写盘结果交错。 */
     synchronized Path retireSnapshot(String worldId, String uploadId) throws IOException {
         ensureOpen();
         Entry entry = worlds.get(worldId);
         if (entry == null || entry.unavailable) return null;
         var commits = entry.metadata.commits();
-        if (commits.isEmpty() || commits.getLast().uploadId().equals(uploadId)
-            || commits.stream().noneMatch(commit -> commit.uploadId().equals(uploadId))) return null;
+        if (commits.isEmpty() || commits.getLast().uploadId().equals(uploadId)) return null;
+        if (commits.stream().noneMatch(commit -> commit.uploadId().equals(uploadId))) {
+            Path index = snapshotIndex(worldId, uploadId);
+            if (Files.notExists(index, LinkOption.NOFOLLOW_LINKS)) return null;
+            requireLocalPath(index, false);
+            var reference = SnapshotReference.read(index);
+            if (!reference.uploadId().equals(uploadId) || reference.version() >= entry.metadata.state().committedVersion()) return null;
+        }
         Path snapshots = root.resolve(worldId).resolve("snapshots");
         requireLocalPath(snapshots, true);
-        return retire(snapshots.resolve(uploadId));
+        Path trash = retire(snapshots.resolve(uploadId));
+        forgetMissingSnapshotIndex(worldId, uploadId);
+        return trash;
     }
 
     synchronized Path retireTemporary(String worldId, Long epoch, Path path, boolean preserveOwned) throws IOException {
@@ -423,7 +470,8 @@ public final class WorldStore implements AutoCloseable {
             // 未上传工作副本仍属有效任期时，离线或超过 TTL 也不能破坏恢复能力。
             if (preserveOwned && state.owner() != null && (epoch == null || epoch == state.epoch())) return null;
             if (path.getParent().equals(root.resolve(worldId).resolve("snapshots"))
-                && entry.metadata.commits().stream().anyMatch(commit -> commit.uploadId().equals(path.getFileName().toString()))) return null;
+                && (entry.metadata.commits().stream().anyMatch(commit -> commit.uploadId().equals(path.getFileName().toString()))
+                || Files.exists(snapshotIndex(worldId, path.getFileName().toString()), LinkOption.NOFOLLOW_LINKS))) return null;
         }
         return retire(path);
     }
@@ -454,8 +502,8 @@ public final class WorldStore implements AutoCloseable {
         commits.add(new WorldMetadata.Commit(uploadId, state.owner(), state.epoch(), baseVersion, version, hash, committedAt));
         var free = new WorldMetadata.State(state.epoch(), WorldPhase.FREE, null, null, version, committedAt, null);
         var next = new WorldMetadata(worldId, entry.metadata.name(), entry.metadata.createdAt(), free, entry.metadata.cancellations(), commits);
-        // 先确认元数据不会因审计历史超过上限而失败。
-        if (next.toJson().getBytes(StandardCharsets.UTF_8).length > MAX_METADATA_BYTES) throw new IOException("World metadata exceeds limit");
+        // 先淘汰超出容量的旧回执，再移动候选；备份的最小索引必须先落盘。
+        next = boundedMetadata(next);
         Path world = root.resolve(worldId);
         if (!candidate.getParent().getParent().equals(world) || !candidate.getParent().getFileName().toString().startsWith(".candidate-")) {
             throw new IOException("Candidate must be private to world store");
@@ -557,6 +605,7 @@ public final class WorldStore implements AutoCloseable {
             entry.unavailable = true;
             throw failure;
         }
+        next = boundedMetadata(next);
         Path temporary = Files.createTempFile(directory, ".world-", ".tmp");
         try {
             writeForced(temporary, next.toJson(), StandardOpenOption.TRUNCATE_EXISTING);
@@ -580,6 +629,45 @@ public final class WorldStore implements AutoCloseable {
             try {
                 Files.deleteIfExists(temporary);
             } catch (IOException ignored) { /* 遗留临时文件不参与加载。 */ }
+        }
+    }
+
+    private WorldMetadata boundedMetadata(WorldMetadata metadata) throws IOException {
+        if (metadata.toJson().getBytes(StandardCharsets.UTF_8).length <= MAX_METADATA_BYTES) return metadata;
+        var commits = metadata.commits();
+        if (commits.size() < 2 || metadata.withCommits(commits.subList(commits.size() - 1, commits.size()))
+            .toJson().getBytes(StandardCharsets.UTF_8).length > MAX_METADATA_BYTES)
+            throw new IOException("World metadata exceeds limit without removable commit receipts");
+        // 二分寻找最小淘汰数量，避免一次积累大量历史时反复序列化造成平方级开销。
+        int low = 1, high = commits.size() - 1;
+        while (low < high) {
+            int middle = (low + high) >>> 1;
+            if (metadata.withCommits(commits.subList(middle, commits.size())).toJson().getBytes(StandardCharsets.UTF_8).length
+                <= MAX_METADATA_BYTES) high = middle;
+            else low = middle + 1;
+        }
+        for (var commit : commits.subList(0, low)) {
+            preserveSnapshotReference(metadata.worldId(), commit);
+        }
+        return metadata.withCommits(commits.subList(low, commits.size()));
+    }
+
+    private void preserveSnapshotReference(String worldId, WorldMetadata.Commit commit) throws IOException {
+        Path snapshot = root.resolve(worldId).resolve("snapshots").resolve(commit.uploadId());
+        if (Files.notExists(snapshot, LinkOption.NOFOLLOW_LINKS)) return;
+        requireLocalPath(snapshot, true);
+        Path target = snapshotIndex(worldId, commit.uploadId());
+        Files.createDirectories(target.getParent());
+        requireLocalPath(target.getParent(), true);
+        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) requireLocalPath(target, false);
+        Path temporary = Files.createTempFile(target.getParent(), ".index-", ".tmp");
+        try {
+            writeForced(temporary, SnapshotReference.from(commit).toJson(), StandardOpenOption.TRUNCATE_EXISTING);
+            atomicMove(temporary, target);
+            SnapshotFiles.forceDirectory(target.getParent());
+            SnapshotFiles.forceDirectory(target.getParent().getParent());
+        } finally {
+            Files.deleteIfExists(temporary);
         }
     }
 

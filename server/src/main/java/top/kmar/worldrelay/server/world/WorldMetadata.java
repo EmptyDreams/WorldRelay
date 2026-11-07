@@ -9,7 +9,7 @@ import top.kmar.worldrelay.server.protocol.HostEndpoint;
 import java.time.Instant;
 import java.util.*;
 
-/** 取消审计、带时间的提交回执和所有权一同原子发布，保留 v1/v2/v3/v4 读取兼容。 */
+/** 所有权与有界提交回执一同原子发布；v6 允许淘汰最旧回执，仍可读取 v1～v5。 */
 record WorldMetadata(String worldId, String name, String createdAt, State state, List<Cancellation> cancellations, List<Commit> commits) {
 
     WorldMetadata(String worldId, String name, String createdAt, State state, List<Cancellation> cancellations) {
@@ -124,7 +124,7 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
             }
             previous = cancellation.epoch;
         }
-        long version = 0;
+        long version = commits.isEmpty() ? 0 : commits.getFirst().version() - 1;
         for (Commit commit : commits) {
             if (commit.version != ++version || commit.epoch > state.epoch) throw new IllegalArgumentException("Invalid commit history");
         }
@@ -135,11 +135,16 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
         return new WorldMetadata(worldId, name, createdAt, next, cancellations, commits);
     }
 
+    WorldMetadata withCommits(List<Commit> retained) {
+        return new WorldMetadata(worldId, name, createdAt, state, cancellations, retained);
+    }
+
     String toJson() {
         int format = 2;
         if (!cancellations.isEmpty()) format = 3;
         if (!commits.isEmpty()) format = 4;
         if (commits.stream().anyMatch(commit -> commit.committedAt != null)) format = 5;
+        if (!commits.isEmpty() && commits.getFirst().version() > 1) format = 6;
         JsonWriter writer = new JsonWriter().beginObject().name("formatVersion")
             .value(format)
             .name("worldId").value(worldId).name("name").value(name).name("createdAt").value(createdAt)
@@ -236,9 +241,10 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
         } else if (format == 3) {
             requireFields(fields, Set.of("formatVersion", "worldId", "name", "createdAt", "state", "cancellations"));
             if (cancellations.isEmpty()) throw new IllegalArgumentException("Missing cancellation history");
-        } else if (format == 4 || format == 5) {
+        } else if (format == 4 || format == 5 || format == 6) {
             requireFields(fields, Set.of("formatVersion", "worldId", "name", "createdAt", "state", "cancellations", "commits"));
             if (commits.isEmpty()) throw new IllegalArgumentException("Missing commit history");
+            if (format < 6 && commits.getFirst().version() != 1) throw new IllegalArgumentException("Incomplete legacy commit history");
         } else throw new IllegalArgumentException("Unsupported world metadata version");
         return new WorldMetadata(id, name, createdAt, state, cancellations, commits);
     }

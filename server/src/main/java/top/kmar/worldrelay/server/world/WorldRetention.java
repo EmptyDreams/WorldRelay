@@ -38,7 +38,7 @@ public final class WorldRetention implements AutoCloseable {
 
     }
 
-    private record Snapshot(String world, WorldMetadata.Commit commit, Path path, Instant time) {
+    private record Snapshot(String world, SnapshotReference commit, Path path, Instant time) {
 
     }
 
@@ -159,9 +159,12 @@ public final class WorldRetention implements AutoCloseable {
         if (Files.notExists(directory, LinkOption.NOFOLLOW_LINKS)) return List.of();
         SnapshotFiles.requireDirectory(directory);
         List<Snapshot> result = new ArrayList<>();
-        for (var commit : metadata.commits()) {
+        for (var commit : worlds.snapshotReferences(metadata)) {
             Path path = directory.resolve(commit.uploadId());
-            if (Files.notExists(path, LinkOption.NOFOLLOW_LINKS)) continue;
+            if (Files.notExists(path, LinkOption.NOFOLLOW_LINKS)) {
+                worlds.forgetMissingSnapshotIndex(metadata.worldId(), commit.uploadId());
+                continue;
+            }
             SnapshotFiles.requireDirectory(path);
             // 老元数据只记录最后提交时间；更早快照使用服务端发布目录的时间。
             Instant at = commit.committedAt() != null ? Instant.parse(commit.committedAt())
@@ -206,6 +209,7 @@ public final class WorldRetention implements AutoCloseable {
             String id = world.metadata().worldId();
             Path directory = worlds.directory().resolve(id);
             cleanChildren(directory, id, null, false, cutoff, ".candidate-", ".world-");
+            cleanChildren(directory.resolve("snapshot-index"), id, null, false, cutoff, ".index-");
             Path snapshots = directory.resolve("snapshots");
             cleanChildren(snapshots, id, null, true, cutoff);
             for (Path path : children(snapshots)) {
