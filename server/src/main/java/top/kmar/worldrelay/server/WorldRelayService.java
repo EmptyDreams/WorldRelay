@@ -4,6 +4,7 @@ import top.kmar.worldrelay.server.auth.SshRegistrationConfig;
 import top.kmar.worldrelay.server.auth.UserStore;
 import top.kmar.worldrelay.server.http.*;
 import top.kmar.worldrelay.server.tunnel.TunnelGateway;
+import top.kmar.worldrelay.server.world.WorldBackups;
 import top.kmar.worldrelay.server.world.WorldRetention;
 import top.kmar.worldrelay.server.world.WorldStore;
 import top.kmar.worldrelay.server.world.WorldTransfers;
@@ -50,9 +51,16 @@ public final class WorldRelayService implements AutoCloseable {
         try {
             users = userStoreFactory.open(config.usersFile(), config.ssh());
             worlds = WorldStore.open(config.worldsDirectory(), config.heartbeatIntervalSeconds(), config.heartbeatTimeoutSeconds());
+            retention = new WorldRetention(worlds, config.ssh().transferDirectory(), config.retention());
+            transferJobs = new TransferJobs();
+            var backups = new WorldBackups(worlds, retention);
             HttpRouter registrationRouter = new HttpRouter();
             registrationRouter.register("POST", "/api/v1/register", new RegistrationHandler(users));
             registrationRouter.register("POST", "/api/v1/worlds", new WorldCreateHandler(worlds));
+            for (var action : WorldBackupHandler.Action.values()) {
+                registrationRouter.register("POST", "/api/v1/worlds/" + action.name().toLowerCase(java.util.Locale.ROOT).replace('_', '-'),
+                    new WorldBackupHandler(backups, action, transferJobs));
+            }
             registration = new WorldRelayHttpServer(new InetSocketAddress("127.0.0.1", config.registrationPort()),
                 config.maxConcurrentRequests(), config.shutdownGraceSeconds(), registrationRouter, LocalRegistrationHandler::new);
             // 先占用注册端口，避免业务端口为 0 时恰好选中配置的注册端口。
@@ -61,9 +69,7 @@ public final class WorldRelayService implements AutoCloseable {
             tunnels.start();
             HttpRouter apiRouter = WorldRelayServer.createRouter(worlds, tunnels);
             apiRouter.register("POST", "/api/v1/worlds/tunnel-ticket", new TunnelTicketHandler(tunnels));
-            retention = new WorldRetention(worlds, config.ssh().transferDirectory(), config.retention());
             var transfers = new WorldTransfers(worlds, users, config.ssh(), retention);
-            transferJobs = new TransferJobs();
             for (WorldTransferHandler.Action action : WorldTransferHandler.Action.values()) {
                 apiRouter.register("POST", "/api/v1/worlds/" + action.name().toLowerCase(java.util.Locale.ROOT).replace('_', '-'),
                     new WorldTransferHandler(transfers, action, transferJobs));

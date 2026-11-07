@@ -14,12 +14,17 @@ import java.time.Instant;
 import java.util.HashSet;
 import java.util.Set;
 
-/** 回执淘汰后，仍保留的备份只需版本和时间索引；不保存身份或提供提交幂等结果。 */
-record SnapshotReference(String uploadId, long version, String committedAt) {
+/** 回执淘汰后保留备份的版本、时间和摘要；不保存身份或提供提交幂等结果。 */
+record SnapshotReference(String uploadId, long version, String committedAt, String manifestHash) {
+
+    SnapshotReference(String uploadId, long version, String committedAt) {
+        this(uploadId, version, committedAt, null);
+    }
 
     SnapshotReference {
         WorldStore.validateId(uploadId);
         if (version < 1) throw new IllegalArgumentException("Invalid snapshot version");
+        if (manifestHash != null && !manifestHash.matches("[0-9a-f]{64}")) throw new IllegalArgumentException("Invalid snapshot hash");
         if (committedAt != null) {
             //noinspection ResultOfMethodCallIgnored
             Instant.parse(committedAt);
@@ -27,7 +32,7 @@ record SnapshotReference(String uploadId, long version, String committedAt) {
     }
 
     static SnapshotReference from(WorldMetadata.Commit commit) {
-        return new SnapshotReference(commit.uploadId(), commit.version(), commit.committedAt());
+        return new SnapshotReference(commit.uploadId(), commit.version(), commit.committedAt(), commit.manifestHash());
     }
 
     String toJson() {
@@ -35,6 +40,7 @@ record SnapshotReference(String uploadId, long version, String committedAt) {
             .name("version").value(version).name("committedAt");
         if (committedAt == null) writer.nullValue();
         else writer.value(committedAt);
+        if (manifestHash != null) writer.name("manifestHash").value(manifestHash);
         return writer.endObject().finish();
     }
 
@@ -43,7 +49,7 @@ record SnapshotReference(String uploadId, long version, String committedAt) {
             byte[] bytes = input.readNBytes(1025);
             if (bytes.length > 1024) throw new IOException("Snapshot index exceeds size limit");
             var reader = new JsonReader(StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString(), 1024, 2);
-            String id = null, at = null;
+            String id = null, at = null, hash = null;
             long version = 0;
             Set<String> fields = new HashSet<>();
             reader.beginObject();
@@ -53,6 +59,7 @@ record SnapshotReference(String uploadId, long version, String committedAt) {
                 switch (field) {
                     case "uploadId" -> id = reader.nextString();
                     case "version" -> version = reader.nextLong();
+                    case "manifestHash" -> hash = reader.nextString();
                     case "committedAt" -> {
                         if (reader.peek() == JsonToken.NULL) reader.nextNull();
                         else at = reader.nextString();
@@ -62,8 +69,10 @@ record SnapshotReference(String uploadId, long version, String committedAt) {
             }
             reader.endObject();
             reader.finish();
-            if (!fields.equals(Set.of("uploadId", "version", "committedAt"))) throw new IllegalArgumentException("Missing snapshot index field");
-            return new SnapshotReference(id, version, at);
+            Set<String> expected = new HashSet<>(Set.of("uploadId", "version", "committedAt"));
+            if (hash != null) expected.add("manifestHash");
+            if (!fields.equals(expected)) throw new IllegalArgumentException("Missing snapshot index field");
+            return new SnapshotReference(id, version, at, hash);
         } catch (RuntimeException failure) {
             throw new IOException("Invalid snapshot index", failure);
         }

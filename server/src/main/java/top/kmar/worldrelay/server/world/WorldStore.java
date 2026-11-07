@@ -97,6 +97,8 @@ public final class WorldStore implements AutoCloseable {
         boolean joinReady;
         Integer players;
         boolean unavailable;
+        WorldBackups.Restore restore;
+        String restoreSource;
 
         Entry(WorldMetadata metadata) {
             this.metadata = metadata;
@@ -222,6 +224,7 @@ public final class WorldStore implements AutoCloseable {
         validateId(requestId);
         Entry entry = entry(worldId);
         var state = entry.metadata.state();
+        if (entry.restore != null) throw conflict("RESTORE_IN_PROGRESS", "A backup restore is in progress");
         for (var committed : entry.metadata.commits()) {
             var owner = committed.owner();
             if (owner.username().equals(username) && owner.deviceId().equals(deviceId) && owner.requestId().equals(requestId)) {
@@ -401,6 +404,104 @@ public final class WorldStore implements AutoCloseable {
         return root;
     }
 
+    record BackupState(WorldMetadata metadata, boolean canRestore) {
+
+    }
+
+    synchronized BackupState backupState(String worldId) throws WorldAccessException {
+        Entry entry = entry(worldId);
+        return new BackupState(entry.metadata, entry.metadata.state().owner() == null && entry.restore == null);
+    }
+
+    synchronized WorldBackups.Result restoreResult(WorldBackups.Restore request) throws WorldAccessException {
+        for (var commit : entry(request.worldId()).metadata.commits()) {
+            if (!commit.uploadId().equals(request.restoreId())) continue;
+            if (!Objects.equals(commit.restoredFromVersion(), request.backupVersion())
+                || !Objects.equals(commit.baseVersion(), request.expectedVersion())
+                || commit.epoch() != request.expectedEpoch() + 1 || !commit.manifestHash().equals(request.manifestHash()))
+                throw conflict("RESTORE_CONFLICT", "Restore ID was used for a different operation");
+            return new WorldBackups.Result(request.worldId(), request.restoreId(), commit.restoredFromVersion(),
+                commit.baseVersion(), commit.version(), commit.epoch(), commit.committedAt());
+        }
+        return null;
+    }
+
+    synchronized void checkRestore(WorldBackups.Restore request) throws WorldAccessException {
+        if (restoreResult(request) != null) return;
+        Entry entry = entry(request.worldId());
+        if (entry.restore != null) {
+            if (!entry.restore.equals(request)) throw conflict("RESTORE_IN_PROGRESS", "Another backup restore is in progress");
+            return;
+        }
+        var state = entry.metadata.state();
+        if (state.owner() != null) throw conflict("WORLD_NOT_FREE", "World must be unowned before restoring a backup");
+        if (state.epoch() != request.expectedEpoch() || !Objects.equals(state.committedVersion(), request.expectedVersion()))
+            throw conflict("WORLD_CHANGED", "World changed since the restore preview; request a new preview");
+    }
+
+    /** 这是本进程私有复制的短期互斥，不改变玩家所有权；进程退出后权威指针仍以磁盘元数据为准。 */
+    synchronized boolean beginRestore(WorldBackups.Restore request, String source) throws IOException, WorldAccessException {
+        if (restoreResult(request) != null) return false;
+        checkRestore(request);
+        Entry entry = entry(request.worldId());
+        if (entry.restore != null) throw conflict("RESTORE_IN_PROGRESS", "This restore is already running");
+        requireLocalPath(root.resolve(request.worldId()).resolve("snapshots").resolve(source), true);
+        entry.restore = request;
+        entry.restoreSource = source;
+        return true;
+    }
+
+    synchronized Path restoreCandidate(WorldBackups.Restore request) throws IOException, WorldAccessException {
+        requireRestore(request);
+        return Files.createTempDirectory(root.resolve(request.worldId()), ".candidate-").resolve("payload");
+    }
+
+    private Entry requireRestore(WorldBackups.Restore request) throws WorldAccessException {
+        Entry entry = entry(request.worldId());
+        if (!request.equals(entry.restore)) throw conflict("RESTORE_NOT_RUNNING", "Restore reservation is no longer active");
+        return entry;
+    }
+
+    synchronized void endRestore(WorldBackups.Restore request) {
+        Entry entry = worlds.get(request.worldId());
+        if (entry != null && !entry.unavailable && request.equals(entry.restore)) {
+            entry.restore = null;
+            entry.restoreSource = null;
+        }
+    }
+
+    synchronized WorldBackups.Result publishRestore(WorldBackups.Restore request, Path candidate) throws IOException, WorldAccessException {
+        Entry entry = requireRestore(request);
+        var state = entry.metadata.state();
+        long version = Math.addExact(request.expectedVersion(), 1), epoch = Math.addExact(state.epoch(), 1);
+        String at = clock.instant().toString();
+        var owner = new WorldMetadata.Owner("local-admin", request.restoreId(), request.restoreId(), request.restoreId());
+        var commits = new ArrayList<>(entry.metadata.commits());
+        commits.add(new WorldMetadata.Commit(request.restoreId(), owner, epoch, request.expectedVersion(), version,
+            request.manifestHash(), at, request.backupVersion()));
+        var free = new WorldMetadata.State(epoch, WorldPhase.FREE, null, null, version, at, null);
+        var next = boundedMetadata(new WorldMetadata(request.worldId(), entry.metadata.name(), entry.metadata.createdAt(),
+            free, entry.metadata.cancellations(), commits));
+        Path world = root.resolve(request.worldId());
+        if (!candidate.getParent().getParent().equals(world) || !candidate.getParent().getFileName().toString().startsWith(".candidate-"))
+            throw new IOException("Restore candidate must be private to world store");
+        Path snapshots = world.resolve("snapshots"), target = snapshots.resolve(request.restoreId());
+        requireLocalPath(snapshots, true);
+        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+            var manifest = top.kmar.worldrelay.snapshot.SnapshotManifest.read(target.resolve("manifest.bin"), request.manifestHash());
+            SnapshotFiles.verify(target.resolve("world"), manifest);
+        } else Files.move(candidate, target, StandardCopyOption.ATOMIC_MOVE);
+        SnapshotFiles.forceDirectory(snapshots);
+        SnapshotFiles.forceDirectory(world);
+        persist(entry, next);
+        entry.seen = false;
+        entry.joinReady = false;
+        entry.players = null;
+        endRestore(request);
+        return new WorldBackups.Result(request.worldId(), request.restoreId(), request.backupVersion(),
+            request.expectedVersion(), version, epoch, at);
+    }
+
     /** 备份索引与近期提交回执合并；读取不占用全局所有权锁，旧索引先于回执淘汰持久化。 */
     List<SnapshotReference> snapshotReferences(WorldMetadata metadata) throws IOException {
         Map<String, SnapshotReference> references = new HashMap<>();
@@ -446,7 +547,7 @@ public final class WorldStore implements AutoCloseable {
         Entry entry = worlds.get(worldId);
         if (entry == null || entry.unavailable) return null;
         var commits = entry.metadata.commits();
-        if (commits.isEmpty() || commits.getLast().uploadId().equals(uploadId)) return null;
+        if (commits.isEmpty() || commits.getLast().uploadId().equals(uploadId) || uploadId.equals(entry.restoreSource)) return null;
         if (commits.stream().noneMatch(commit -> commit.uploadId().equals(uploadId))) {
             Path index = snapshotIndex(worldId, uploadId);
             if (Files.notExists(index, LinkOption.NOFOLLOW_LINKS)) return null;
@@ -567,6 +668,7 @@ public final class WorldStore implements AutoCloseable {
     private String status(Entry entry) {
         var state = entry.metadata.state();
         if (entry.unavailable) return "RECOVERY_REQUIRED";
+        if (entry.restore != null) return "COMMITTING";
         if (state.owner() != null && (!online(entry, ticker.getAsLong())
             || (state.phase() == WorldPhase.RUNNING && (!entry.joinReady || !tunnelAvailable.test(entry.metadata.worldId())))))
             return "RECOVERY_REQUIRED";
