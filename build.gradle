@@ -178,19 +178,45 @@ dependencies {
 }
 
 // 可选模组的发布类测试单独启用；普通回归保持未安装这些模组的环境。
-if (providers.gradleProperty('createTests').getOrElse('false').toBoolean()) {
+def createTests = providers.gradleProperty('createTests').getOrElse('false').toBoolean()
+def ipnTestMods = providers.gradleProperty('ipnTestMods')
+if (createTests || ipnTestMods.isPresent()) {
+    def fixtureAgent = configurations.create('fixtureAgent')
+    dependencies {
+        testImplementation 'org.mockito:mockito-core:5.24.0'
+        add('fixtureAgent', 'org.mockito:mockito-core:5.24.0') { transitive = false }
+    }
+    tasks.named('test', Test).configure {
+        // 显式安装官方测试 agent，避免 JDK 运行时自附加及对应警告。
+        jvmArgs "-javaagent:${fixtureAgent.asPath}", '-Xshare:off'
+    }
+}
+
+if (createTests) {
     sourceSets.test.java.srcDir('src/createTest/java')
-    def createTestAgent = configurations.create('createTestAgent')
     dependencies {
         testImplementation('com.simibubi.create:create-1.21.1:6.0.10-281') { transitive = false }
         // 蓝图桌继承的 Ponder 接口；运行时由 Create JAR 内置的相同版本提供。
         testCompileOnly('net.createmod.ponder:ponder-neoforge:1.0.82+mc1.21.1') { transitive = false }
-        testImplementation 'org.mockito:mockito-core:5.24.0'
-        add('createTestAgent', 'org.mockito:mockito-core:5.24.0') { transitive = false }
     }
-    tasks.named('test', Test).configure {
-        // 显式安装官方测试 agent，避免 JDK 运行时自附加及对应警告。
-        jvmArgs "-javaagent:${createTestAgent.asPath}", '-Xshare:off'
+}
+
+// 直接验证整合包发布 JAR；该目录只读取，不安装或改写其中的模组。
+if (ipnTestMods.isPresent()) {
+    def ipnMods = fileTree(ipnTestMods.get()) {
+        include '*InventoryProfilesNext-neoforge-1.21.1-2.2.5.jar'
+        include '*libIPN-neoforge-1.21.1-6.6.3.jar'
+        include '*kotlinforforge-5.12.0-all.jar'
+    }
+    if (ipnMods.files.size() != 3) {
+        throw new GradleException('ipnTestMods must contain IPN 2.2.5, libIPN 6.6.3 and Kotlin for Forge 5.12.0 (Minecraft 1.21.1 / NeoForge)')
+    }
+    sourceSets.test.java.srcDir('src/ipnTest/java')
+    sourceSets.test.resources.srcDir('src/ipnTest/resources')
+    dependencies { testImplementation(ipnMods) }
+    tasks.named('prepareNeoForgeTestFiles').configure {
+        // forgejunitdev 使用 SERVER 侧，在无画面测试中装配相同的客户端注入。
+        programArguments.addAll('--mixin', 'worldrelay.ipn-test.mixins.json')
     }
 }
 
