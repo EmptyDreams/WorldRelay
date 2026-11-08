@@ -117,7 +117,6 @@ public final class SharedWorldCreation {
                         creation.save(session.with(LocalWorldSession.Stage.STARTED, session.folder()));
                         if (active != null) {
                             active.stopHeartbeat();
-                            active.saveMonitor.detach();
                             if (active.tunnelHost != null) active.tunnelHost.close();
                         }
                         active = creation;
@@ -254,8 +253,6 @@ public final class SharedWorldCreation {
         private volatile boolean fenced;
         private long nextHostAttempt;
         private long nextPlayerCount;
-        private final SaveFailureMonitor saveMonitor = new SaveFailureMonitor();
-        private boolean monitorAttached;
         private boolean finishScreenShown;
         private String finishMessage = "uploading";
         private boolean finishPending = true;
@@ -303,13 +300,6 @@ public final class SharedWorldCreation {
             if (heartbeat != null) heartbeat.cancel(false);
         }
 
-        private void monitorSaves() {
-            if (!monitorAttached) {
-                saveMonitor.attach();
-                monitorAttached = true;
-            }
-        }
-
         private void downloadAndOpen() {
             if (busy) return;
             busy = true;
@@ -353,7 +343,6 @@ public final class SharedWorldCreation {
         }
 
         private void openExisting() {
-            monitorSaves();
             new WorldOpenFlows(Minecraft.getInstance(), storage).openWorld(session.folder(),
                 () -> show(parent, "recovery_failed", false, null));
         }
@@ -427,7 +416,6 @@ public final class SharedWorldCreation {
                     save(session.with(LocalWorldSession.Stage.STARTED, folder));
                     Minecraft.getInstance().execute(() -> {
                         resuming = true;
-                        monitorSaves();
                         try {
                             vanillaCreate.run();
                         } catch (RuntimeException failure) {
@@ -561,7 +549,7 @@ public final class SharedWorldCreation {
             try {
                 // 事件仍在服务器线程中触发；IO 线程等待 onServerExit 与所有 finally 完成。
                 event.getServer().getRunningThread().join();
-                if (!creation.normalStop || !creation.saveReturned || creation.saveMonitor.failed()) {
+                if (!creation.normalStop || !creation.saveReturned) {
                     throw new IOException("World did not stop cleanly");
                 }
                 creation.save(creation.session.with(LocalWorldSession.Stage.STOPPED, creation.session.folder()));
@@ -580,8 +568,6 @@ public final class SharedWorldCreation {
                     creation.finishPending = false;
                     creation.finishScreenShown = false;
                 });
-            } finally {
-                creation.saveMonitor.detach();
             }
         });
     }
