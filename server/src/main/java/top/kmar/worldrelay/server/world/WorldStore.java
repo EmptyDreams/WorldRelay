@@ -53,7 +53,7 @@ public final class WorldStore implements AutoCloseable {
         } catch (WorldAccessException ignored) { /* 旧登记不能撤下新任期。 */ }
     }
 
-    // UTF-8 元数据总上限；提交回执从旧到新淘汰，当前权威版本及取消审计保留。
+    // UTF-8 元数据总上限；历史按任期从旧到新淘汰，保留权威版本回执和最近一条取消审计。
     static final int MAX_METADATA_BYTES = 1024 * 1024;
     private final Path root;
     private final FileChannel lockChannel;
@@ -665,7 +665,7 @@ public final class WorldStore implements AutoCloseable {
         commits.add(new WorldMetadata.Commit(uploadId, state.owner(), state.epoch(), baseVersion, version, hash, committedAt));
         var free = new WorldMetadata.State(state.epoch(), WorldPhase.FREE, null, null, version, committedAt, null);
         var next = new WorldMetadata(worldId, entry.metadata.name(), entry.metadata.createdAt(), free, entry.metadata.cancellations(), commits);
-        // 先淘汰超出容量的旧回执，再移动候选；备份的最小索引必须先落盘。
+        // 先淘汰超出容量的旧历史，再移动候选；备份的最小索引必须先落盘。
         next = boundedMetadata(next);
         Path world = root.resolve(worldId);
         if (!candidate.getParent().getParent().equals(world) || !candidate.getParent().getFileName().toString().startsWith(".candidate-")) {
@@ -799,24 +799,51 @@ public final class WorldStore implements AutoCloseable {
         }
     }
 
+    private record HistoryCut(int cancellations, int commits) {
+
+        WorldMetadata apply(WorldMetadata metadata) {
+            return metadata.withHistory(metadata.cancellations().subList(cancellations, metadata.cancellations().size()),
+                metadata.commits().subList(commits, metadata.commits().size()));
+        }
+
+    }
+
+    private static List<HistoryCut> historyCuts(WorldMetadata metadata) {
+        var commits = metadata.commits();
+        var cancellations = metadata.cancellations();
+        int removableCommits = Math.max(0, commits.size() - 1);
+        int removableCancellations = Math.max(0, cancellations.size() - 1);
+        var cuts = new ArrayList<HistoryCut>(removableCommits + removableCancellations);
+        int removedCommits = 0, removedCancellations = 0;
+        // 两类历史分别保留连续的新记录；最新回执和审计不参与淘汰。
+        while (removedCommits < removableCommits || removedCancellations < removableCancellations) {
+            if (removedCancellations < removableCancellations && (removedCommits == removableCommits
+                || cancellations.get(removedCancellations).epoch() <= commits.get(removedCommits).epoch())) {
+                removedCancellations++;
+            } else removedCommits++;
+            cuts.add(new HistoryCut(removedCancellations, removedCommits));
+        }
+        return cuts;
+    }
+
     private WorldMetadata boundedMetadata(WorldMetadata metadata) throws IOException {
         if (metadata.toJson().getBytes(StandardCharsets.UTF_8).length <= MAX_METADATA_BYTES) return metadata;
-        var commits = metadata.commits();
-        if (commits.size() < 2 || metadata.withCommits(commits.subList(commits.size() - 1, commits.size()))
-            .toJson().getBytes(StandardCharsets.UTF_8).length > MAX_METADATA_BYTES)
-            throw new IOException("World metadata exceeds limit without removable commit receipts");
+        var cuts = historyCuts(metadata);
+        if (cuts.isEmpty() || cuts.getLast().apply(metadata).toJson().getBytes(StandardCharsets.UTF_8).length > MAX_METADATA_BYTES)
+            throw new IOException("World metadata exceeds limit without removable history");
         // 二分寻找最小淘汰数量，避免一次积累大量历史时反复序列化造成平方级开销。
-        int low = 1, high = commits.size() - 1;
+        int low = 0, high = cuts.size() - 1;
         while (low < high) {
             int middle = (low + high) >>> 1;
-            if (metadata.withCommits(commits.subList(middle, commits.size())).toJson().getBytes(StandardCharsets.UTF_8).length
+            if (cuts.get(middle).apply(metadata).toJson().getBytes(StandardCharsets.UTF_8).length
                 <= MAX_METADATA_BYTES) high = middle;
             else low = middle + 1;
         }
-        for (var commit : commits.subList(0, low)) {
+        var cut = cuts.get(low);
+        for (var commit : metadata.commits().subList(0, cut.commits())) {
             preserveSnapshotReference(metadata.worldId(), commit);
         }
-        return metadata.withCommits(commits.subList(low, commits.size()));
+        return cut.apply(metadata);
     }
 
     private void preserveSnapshotReference(String worldId, WorldMetadata.Commit commit) throws IOException {

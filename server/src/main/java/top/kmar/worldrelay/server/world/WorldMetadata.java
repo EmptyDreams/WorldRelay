@@ -9,7 +9,7 @@ import top.kmar.worldrelay.server.protocol.HostEndpoint;
 import java.time.Instant;
 import java.util.*;
 
-/** 所有权与有界提交回执一同原子发布；v8 增加管理员放弃审计，仍可读取 v1～v7。 */
+/** 所有权、有界提交回执和取消审计一同原子发布；v8 增加管理员放弃审计，仍可读取 v1～v7。 */
 record WorldMetadata(String worldId, String name, String createdAt, State state, List<Cancellation> cancellations, List<Commit> commits) {
 
     WorldMetadata(String worldId, String name, String createdAt, State state, List<Cancellation> cancellations) {
@@ -153,8 +153,8 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
         return new WorldMetadata(worldId, name, createdAt, next, cancellations, commits);
     }
 
-    WorldMetadata withCommits(List<Commit> retained) {
-        return new WorldMetadata(worldId, name, createdAt, state, cancellations, retained);
+    WorldMetadata withHistory(List<Cancellation> retainedCancellations, List<Commit> retainedCommits) {
+        return new WorldMetadata(worldId, name, createdAt, state, retainedCancellations, retainedCommits);
     }
 
     String toJson() {

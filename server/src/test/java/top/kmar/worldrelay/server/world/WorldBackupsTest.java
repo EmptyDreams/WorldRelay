@@ -138,7 +138,7 @@ class WorldBackupsTest {
         Path index = Files.createDirectory(data.directory().resolve("snapshot-index"));
         var first = metadata.commits().getFirst();
         Files.writeString(index.resolve(first.uploadId() + ".json"), SnapshotReference.from(first).toJson());
-        Files.writeString(data.metadata(), metadata.withCommits(List.of(metadata.commits().getLast())).toJson());
+        Files.writeString(data.metadata(), metadata.withHistory(metadata.cancellations(), List.of(metadata.commits().getLast())).toJson());
         try (var store = WorldStore.open(data.root()); var retention = retention(store)) {
             var backups = new WorldBackups(store, retention);
             var request = backups.preview(data.world(), 1);
