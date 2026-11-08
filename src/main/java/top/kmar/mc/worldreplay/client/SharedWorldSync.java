@@ -40,7 +40,6 @@ final class SharedWorldSync {
         if (!verified) run(game, settings, store, payload, ticket, false);
         SnapshotManifest manifest = SnapshotManifest.read(payload.resolve(SnapshotManifest.FILE_NAME), expected);
         SnapshotFiles.verify(payload.resolve("world"), manifest);
-        store.cache(session, "download", expected);
         Path target = store.saves(session.epoch()).resolve(session.folder());
         if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
             // 只有从未允许 Minecraft 打开的 DOWNLOADING 阶段才允许复用这个已校验的目标。
@@ -53,6 +52,9 @@ final class SharedWorldSync {
             Files.move(copy, target, StandardCopyOption.ATOMIC_MOVE);
             Files.delete(temporary);
         }
+        // 工作副本也完整生成后，才能替代失败会话和旧缓存；复制中断不淘汰旧数据。
+        store.cache(session, "download", expected);
+        store.cleanupAfterCheckpoint();
         try {
             request(settings, user, session, "close-download", id, null);
         } catch (IOException ignored) { /* 只读密钥会过期，不影响已完成的完整性验证。 */ }
@@ -99,7 +101,7 @@ final class SharedWorldSync {
         Path payload = store.transfer(session.epoch(), "upload");
         // 先查询幂等提交结果；上次成功响应丢失时，不能重新取得锁或创建新上传 ID。
         if (commit(settings, user, session, false)) {
-            cacheUploaded(store, session);
+            cacheSnapshot(store, session);
             return;
         }
         WorldOwnershipClient.command(settings, user, session, "stop", "BEGIN");
@@ -108,13 +110,13 @@ final class SharedWorldSync {
         SnapshotFiles.verify(payload.resolve("world"), manifest);
         run(game, settings, store, payload, ticket, true);
         commit(settings, user, session, true);
-        cacheUploaded(store, session);
+        cacheSnapshot(store, session);
     }
 
-    private static void cacheUploaded(LocalWorldSessionStore store, LocalWorldSession session) {
+    static void cacheSnapshot(LocalWorldSessionStore store, LocalWorldSession session) {
         try {
             store.cache(session, "upload", session.manifestHash());
-        } catch (IOException ignored) { /* 缓存索引失败不会改变已确认的权威提交。 */ }
+        } catch (IOException ignored) { /* 缓存索引失败不改变上传内容或所有权，仍可用固定快照重试。 */ }
     }
 
     private static void seedCache(LocalWorldSessionStore store, Path payload) throws IOException {

@@ -78,6 +78,7 @@ public final class SharedWorldCreation {
                 LocalWorldSessionStore.lockGame(game);
                 store = new LocalWorldSessionStore(game, settings.serverUri().toString(), user, profile, worldId);
                 session = store.read();
+                if (session != null && session.stage() == LocalWorldSession.Stage.COMMITTED) store.cleanupAfterCheckpoint();
                 boolean ownedSession = session != null && session.sessionId() != null
                     && session.stage() != LocalWorldSession.Stage.CANCELLED && session.stage() != LocalWorldSession.Stage.COMMITTED;
                 if (ownedSession && session.stage() != LocalWorldSession.Stage.UPLOADING && session.stage() != LocalWorldSession.Stage.CANCELLING) {
@@ -489,6 +490,8 @@ public final class SharedWorldCreation {
                         try (DirectoryLock ignored = DirectoryLock.create(worldDirectory)) {
                             save(SharedWorldSync.prepareUpload(session, store));
                         }
+                        SharedWorldSync.cacheSnapshot(store, session);
+                        store.cleanupAfterCheckpoint();
                     }
                     // 请求丢失时可重复 BEGIN；在上传前明确撤下房主端点。
                     // UPLOADING 的提交可能早已成功，故先由同步层查询结果，再决定是否上传。
@@ -496,6 +499,7 @@ public final class SharedWorldCreation {
                     save(session.with(LocalWorldSession.Stage.COMMITTED, session.folder()));
                     stopHeartbeat();
                     active = null;
+                    store.cleanupAfterCheckpoint();
                     Minecraft.getInstance().execute(() -> {
                         busy = false;
                         finishing = false;

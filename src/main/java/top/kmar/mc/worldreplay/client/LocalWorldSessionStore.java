@@ -3,6 +3,8 @@ package top.kmar.mc.worldreplay.client;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import top.kmar.mc.worldreplay.WorldRelay;
+import top.kmar.worldrelay.snapshot.SnapshotManifest;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -108,6 +110,27 @@ final class LocalWorldSessionStore {
         json.addProperty("direction", direction);
         json.addProperty("hash", hash);
         atomicWrite(root.resolve("cache.json"), json.toString());
+    }
+
+    /** 只在新副本完整落盘或提交确认后调用；清理失败不能把已完成的同步报告为失败。 */
+    void cleanupAfterCheckpoint() {
+        try {
+            var session = read();
+            if (session == null) return;
+            var latest = cache();
+            if (session.stage() == LocalWorldSession.Stage.COMMITTED && session.manifestHash() != null) {
+                Path uploaded = root.resolve("work").resolve(Long.toString(session.epoch())).resolve("upload");
+                if ((latest == null || !latest.payload().equals(uploaded) || !latest.hash().equals(session.manifestHash()))
+                    && Files.isDirectory(uploaded.resolve("world"), LinkOption.NOFOLLOW_LINKS)) {
+                    SnapshotManifest.read(uploaded.resolve(SnapshotManifest.FILE_NAME), session.manifestHash());
+                    cache(session, "upload", session.manifestHash());
+                    latest = cache();
+                }
+            }
+            LocalWorldCleanup.clean(root, session, latest);
+        } catch (IOException | RuntimeException failure) {
+            WorldRelay.LOGGER.warn("Old local world files could not be removed; cleanup will retry after the next successful sync", failure);
+        }
     }
 
     LocalWorldSession read() throws IOException {
