@@ -264,7 +264,7 @@ public final class WorldStore implements AutoCloseable {
     public synchronized void cancelCreation(String worldId, Identity identity) throws IOException, WorldAccessException {
         Entry entry = entry(worldId);
         for (var cancellation : entry.metadata.cancellations()) {
-            if (cancellation.matches(identity)) return; // 不影响后来取得的所有权。
+            if (cancellation.abandonId() == null && cancellation.matches(identity)) return; // 不影响后来取得的所有权。
         }
         entry = owned(worldId, identity);
         var state = entry.metadata.state();
@@ -279,6 +279,56 @@ public final class WorldStore implements AutoCloseable {
         entry.seen = false;
         entry.joinReady = false;
         entry.players = null;
+    }
+
+    public synchronized WorldAbandonment.Request previewAbandon(String worldId) throws WorldAccessException {
+        Entry entry = entry(worldId);
+        var state = entry.metadata.state();
+        if (entry.restore != null) throw conflict("RESTORE_IN_PROGRESS", "A backup restore is in progress");
+        if (state.owner() == null) throw conflict("WORLD_NOT_OWNED", "World has no progress owner to abandon");
+        if (state.epoch() == Long.MAX_VALUE) throw conflict("EPOCH_EXHAUSTED", "Ownership epoch is exhausted");
+        return new WorldAbandonment.Request(worldId, UUID.randomUUID().toString(), state.epoch(), state.committedVersion(),
+            state.phase(), state.owner().username(), state.lastCommittedAt(), "");
+    }
+
+    /** 管理员二次确认后原子撤销旧任期；回执和审计先落盘，才能重新接受获取请求。 */
+    public synchronized WorldAbandonment.Result abandon(WorldAbandonment.Request request) throws IOException, WorldAccessException {
+        Entry entry = entry(request.worldId());
+        for (var audit : entry.metadata.cancellations()) {
+            if (!request.abandonId().equals(audit.abandonId())) continue;
+            if (audit.epoch() != request.expectedEpoch() || !Objects.equals(audit.committedVersion(), request.expectedVersion())
+                || audit.phase() != request.expectedPhase() || !audit.owner().username().equals(request.ownerUsername())
+                || !Objects.equals(audit.lastCommittedAt(), request.lastCommittedAt()) || !audit.reason().equals(request.reason()))
+                throw conflict("ABANDON_CONFLICT", "Abandonment ID was used for a different request");
+            return abandonmentResult(request.worldId(), audit);
+        }
+        var state = entry.metadata.state();
+        if (entry.restore != null) throw conflict("RESTORE_IN_PROGRESS", "A backup restore is in progress");
+        if (state.owner() == null) throw conflict("WORLD_NOT_OWNED", "World has no progress owner to abandon");
+        if (state.epoch() != request.expectedEpoch() || !Objects.equals(state.committedVersion(), request.expectedVersion())
+            || state.phase() != request.expectedPhase() || !state.owner().username().equals(request.ownerUsername())
+            || !Objects.equals(state.lastCommittedAt(), request.lastCommittedAt()))
+            throw conflict("WORLD_CHANGED", "Owner or world state changed since the abandonment preview");
+        var audit = new WorldMetadata.Cancellation(state.owner(), state.epoch(), clock.instant().toString(), request.abandonId(),
+            state.committedVersion(), state.lastCommittedAt(), state.phase(), request.reason());
+        var history = new ArrayList<>(entry.metadata.cancellations());
+        history.add(audit);
+        var free = new WorldMetadata.State(Math.addExact(state.epoch(), 1), WorldPhase.FREE, null, null,
+            state.committedVersion(), state.lastCommittedAt(), null);
+        persist(entry, new WorldMetadata(entry.metadata.worldId(), entry.metadata.name(), entry.metadata.createdAt(), free,
+            history, entry.metadata.commits()));
+        entry.seen = false;
+        entry.joinReady = false;
+        entry.players = null;
+        System.getLogger(getClass().getName()).log(System.Logger.Level.INFO,
+            "Local admin abandoned world {0}, owner={1}, revokedEpoch={2}, retainedVersion={3}, abandonId={4}",
+            request.worldId(), audit.owner().username(), audit.epoch(), audit.committedVersion(), audit.abandonId());
+        return abandonmentResult(request.worldId(), audit);
+    }
+
+    private static WorldAbandonment.Result abandonmentResult(String worldId, WorldMetadata.Cancellation audit) {
+        return new WorldAbandonment.Result(worldId, audit.abandonId(), audit.owner().username(), audit.epoch(), audit.epoch() + 1,
+            audit.committedVersion(), audit.lastCommittedAt(), audit.cancelledAt());
     }
 
     public synchronized OwnershipView ready(
@@ -632,7 +682,10 @@ public final class WorldStore implements AutoCloseable {
         Entry entry = entry(worldId);
         var state = entry.metadata.state();
         var owner = state.owner();
-        if (owner == null) throw conflict("WORLD_NOT_OWNED", "World has no owner");
+        if (owner == null) {
+            if (identity.epoch() < state.epoch()) throw conflict("STALE_EPOCH", "Ownership epoch was revoked");
+            throw conflict("WORLD_NOT_OWNED", "World has no owner");
+        }
         if (!owner.username().equals(identity.username()) || !owner.deviceId().equals(identity.deviceId())) {
             throw new WorldAccessException(403, "OWNER_MISMATCH", "Request does not belong to the owner");
         }

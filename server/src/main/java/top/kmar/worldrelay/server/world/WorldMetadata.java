@@ -9,7 +9,7 @@ import top.kmar.worldrelay.server.protocol.HostEndpoint;
 import java.time.Instant;
 import java.util.*;
 
-/** 所有权与有界提交回执一同原子发布；v7 记录备份恢复来源，仍可读取 v1～v6。 */
+/** 所有权与有界提交回执一同原子发布；v8 增加管理员放弃审计，仍可读取 v1～v7。 */
 record WorldMetadata(String worldId, String name, String createdAt, State state, List<Cancellation> cancellations, List<Commit> commits) {
 
     WorldMetadata(String worldId, String name, String createdAt, State state, List<Cancellation> cancellations) {
@@ -53,7 +53,12 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
 
     }
 
-    record Cancellation(Owner owner, long epoch, String cancelledAt) {
+    record Cancellation(Owner owner, long epoch, String cancelledAt, String abandonId, Long committedVersion,
+                        String lastCommittedAt, WorldPhase phase, String reason) {
+
+        Cancellation(Owner owner, long epoch, String cancelledAt) {
+            this(owner, epoch, cancelledAt, null, null, null, null, null);
+        }
 
         Cancellation {
             Objects.requireNonNull(owner);
@@ -61,6 +66,12 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
             // 只验证审计时间格式，存储保留调用方提供的原始字符串。
             //noinspection ResultOfMethodCallIgnored
             Instant.parse(cancelledAt);
+            if (abandonId != null) {
+                WorldStore.validateId(abandonId);
+                WorldAbandonment.validate(epoch, committedVersion, phase, lastCommittedAt, reason);
+            } else if (committedVersion != null || lastCommittedAt != null || phase != null || reason != null) {
+                throw new IllegalArgumentException("Invalid cancellation audit fields");
+            }
         }
 
         boolean matches(WorldStore.Identity identity) {
@@ -153,6 +164,7 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
         if (commits.stream().anyMatch(commit -> commit.committedAt != null)) format = 5;
         if (!commits.isEmpty() && commits.getFirst().version() > 1) format = 6;
         if (commits.stream().anyMatch(commit -> commit.restoredFromVersion != null)) format = 7;
+        if (cancellations.stream().anyMatch(cancellation -> cancellation.abandonId != null)) format = 8;
         JsonWriter writer = new JsonWriter().beginObject().name("formatVersion")
             .value(format)
             .name("worldId").value(worldId).name("name").value(name).name("createdAt").value(createdAt)
@@ -181,11 +193,21 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
                 Owner owner = cancellation.owner;
                 writer.beginObject().name("username").value(owner.username).name("deviceId").value(owner.deviceId)
                     .name("sessionId").value(owner.sessionId).name("requestId").value(owner.requestId)
-                    .name("epoch").value(cancellation.epoch).name("cancelledAt").value(cancellation.cancelledAt).endObject();
+                    .name("epoch").value(cancellation.epoch).name("cancelledAt").value(cancellation.cancelledAt);
+                if (cancellation.abandonId != null) {
+                    writer.name("abandonId").value(cancellation.abandonId).name("actor").value("local-admin").name("committedVersion");
+                    if (cancellation.committedVersion == null) writer.nullValue();
+                    else writer.value(cancellation.committedVersion);
+                    writer.name("lastCommittedAt");
+                    if (cancellation.lastCommittedAt == null) writer.nullValue();
+                    else writer.value(cancellation.lastCommittedAt);
+                    writer.name("phase").value(cancellation.phase.name()).name("reason").value(cancellation.reason);
+                }
+                writer.endObject();
             }
             writer.endArray();
         }
-        if (!commits.isEmpty()) {
+        if (!commits.isEmpty() || format == 8) {
             writer.name("commits").beginArray();
             for (Commit commit : commits) {
                 Owner owner = commit.owner;
@@ -250,10 +272,12 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
         } else if (format == 3) {
             requireFields(fields, Set.of("formatVersion", "worldId", "name", "createdAt", "state", "cancellations"));
             if (cancellations.isEmpty()) throw new IllegalArgumentException("Missing cancellation history");
-        } else if (format >= 4 && format <= 7) {
+        } else if (format >= 4 && format <= 8) {
             requireFields(fields, Set.of("formatVersion", "worldId", "name", "createdAt", "state", "cancellations", "commits"));
-            if (commits.isEmpty()) throw new IllegalArgumentException("Missing commit history");
+            if (commits.isEmpty() && format != 8) throw new IllegalArgumentException("Missing commit history");
             if (format < 6 && commits.getFirst().version() != 1) throw new IllegalArgumentException("Incomplete legacy commit history");
+            if (format == 8 && cancellations.stream().noneMatch(cancellation -> cancellation.abandonId != null))
+                throw new IllegalArgumentException("Missing abandonment audit");
         } else throw new IllegalArgumentException("Unsupported world metadata version");
         return new WorldMetadata(id, name, createdAt, state, cancellations, commits);
     }
@@ -291,6 +315,9 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
     private static Cancellation readCancellation(JsonReader reader) {
         Set<String> fields = new HashSet<>();
         String username = null, device = null, session = null, request = null, at = null;
+        String abandonId = null, lastCommittedAt = null, reason = null, actor = null;
+        WorldPhase phase = null;
+        Long version = null;
         long epoch = 0;
         reader.beginObject();
         while (reader.hasNext()) {
@@ -303,12 +330,26 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
                 case "requestId" -> request = reader.nextString();
                 case "epoch" -> epoch = reader.nextLong();
                 case "cancelledAt" -> at = reader.nextString();
+                case "abandonId" -> abandonId = reader.nextString();
+                case "actor" -> actor = reader.nextString();
+                case "committedVersion" -> version = nullableLong(reader);
+                case "lastCommittedAt" -> {
+                    if (reader.peek() == JsonToken.NULL) reader.nextNull();
+                    else lastCommittedAt = reader.nextString();
+                }
+                case "phase" -> phase = WorldPhase.valueOf(reader.nextString());
+                case "reason" -> reason = reader.nextString();
                 default -> throw new IllegalArgumentException("Unknown cancellation field");
             }
         }
         reader.endObject();
-        requireFields(fields, Set.of("username", "deviceId", "sessionId", "requestId", "epoch", "cancelledAt"));
-        return new Cancellation(new Owner(username, device, session, request), epoch, at);
+        Set<String> expected = new HashSet<>(Set.of("username", "deviceId", "sessionId", "requestId", "epoch", "cancelledAt"));
+        if (abandonId != null) {
+            expected.addAll(Set.of("abandonId", "actor", "committedVersion", "lastCommittedAt", "phase", "reason"));
+            if (!"local-admin".equals(actor)) throw new IllegalArgumentException("Invalid abandonment actor");
+        }
+        requireFields(fields, expected);
+        return new Cancellation(new Owner(username, device, session, request), epoch, at, abandonId, version, lastCommittedAt, phase, reason);
     }
 
     private static State readState(JsonReader reader) {

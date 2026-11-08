@@ -284,6 +284,30 @@ class TunnelGatewayTest {
         }
     }
 
+    /** 管理员放弃会立即废止旧房主登记及未使用的加入票据，新房主仍可从新任期接手。 */
+    @ParameterizedTest
+    @EnumSource(TunnelConfig.Mode.class)
+    void abandonmentInvalidatesHostRegistrationAndPendingTickets(TunnelConfig.Mode mode) throws Exception {
+        try (var fixture = new Fixture(mode); var echo = new Echo(0)) {
+            var world = fixture.world();
+            fixture.host(world, echo.port());
+            var join = fixture.gateway.join(world.id, "Guest", false);
+            var host = fixture.gateway.host(world.id, world.owner);
+            var preview = fixture.worlds.previewAbandon(world.id);
+            var result = fixture.worlds.abandon(preview);
+            assertEquals(world.owner.epoch() + 1, result.epoch());
+            assertEquals("FREE", fixture.worlds.list().getFirst().status());
+            var connector = fixture.connector();
+            assertThrows(ExecutionException.class, () -> connector.connect(fixture.endpoint(join), join.token(), null).get(10, TimeUnit.SECONDS));
+            assertThrows(ExecutionException.class, () -> connector.connect(fixture.endpoint(host), host.token(), ignored -> {}).get(10, TimeUnit.SECONDS));
+            assertThrows(WorldAccessException.class, () -> fixture.gateway.join(world.id, "Guest", false));
+            var next = fixture.worlds.acquire(world.id, "Next", UUID.randomUUID().toString(), UUID.randomUUID().toString()).view();
+            assertTrue(next.epoch() > result.epoch());
+            assertEquals(result, fixture.worlds.abandon(preview));
+            assertEquals("Next", fixture.worlds.list().getFirst().hostName());
+        }
+    }
+
     /** TCP 可以通过域名连接并验证 API 指纹；错误指纹拒绝握手，重启继续使用同一证书。 */
     @Test
     void verifiesPinnedCertificateAndPersistsIdentity() throws Exception {

@@ -61,6 +61,10 @@ public final class WorldRelayService implements AutoCloseable {
                 registrationRouter.register("POST", "/api/v1/worlds/" + action.name().toLowerCase(java.util.Locale.ROOT).replace('_', '-'),
                     new WorldBackupHandler(backups, action, transferJobs));
             }
+            for (var action : WorldAbandonHandler.Action.values()) {
+                registrationRouter.register("POST", "/api/v1/worlds/" + action.name().toLowerCase(java.util.Locale.ROOT).replace('_', '-'),
+                    new WorldAbandonHandler(worlds, action));
+            }
             registration = new WorldRelayHttpServer(new InetSocketAddress("127.0.0.1", config.registrationPort()),
                 config.maxConcurrentRequests(), config.shutdownGraceSeconds(), registrationRouter, LocalRegistrationHandler::new);
             // 先占用注册端口，避免业务端口为 0 时恰好选中配置的注册端口。
