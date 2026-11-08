@@ -21,7 +21,7 @@ import java.util.Set;
 /** 固定协调路由共享有界 JSON 解析；只从鉴权上下文读取用户，不接受客户端指定持有者。 */
 public final class WorldOwnershipHandler implements HttpHandler {
 
-    public enum Action {ACQUIRE, HEARTBEAT, READY, STOP, CANCEL_CREATION}
+    public enum Action {ACQUIRE, HEARTBEAT, READY, STOP, CANCEL_CREATION, CHECK_LOCAL_REUSE}
 
     private static final int MAX_BODY_BYTES = 4096;
     private static final Set<String> IDENTITY_FIELDS = Set.of("worldId", "deviceId", "sessionId", "epoch");
@@ -55,10 +55,16 @@ public final class WorldOwnershipHandler implements HttpHandler {
         }
         try {
             String username = exchange.getPrincipal().getUsername();
+            if (action == Action.CHECK_LOCAL_REUSE) {
+                boolean allowed = worlds.canReuseLocal(command.worldId, username, command.deviceId, command.sourceEpoch, command.baseVersion);
+                String json = new JsonWriter().beginObject().name("worldId").value(command.worldId).name("allowed").value(allowed).endObject().finish();
+                HttpResponses.bytes(exchange, 200, "application/json; charset=utf-8", json.getBytes(StandardCharsets.UTF_8));
+                return;
+            }
             OwnershipView view;
             int status = 200;
             if (action == Action.ACQUIRE) {
-                var result = worlds.acquire(command.worldId, username, command.deviceId, command.requestId);
+                var result = worlds.acquire(command.worldId, username, command.deviceId, command.requestId, command.sourceEpoch, command.baseVersion);
                 view = result.view();
                 status = result.acquired() ? 201 : 200;
             } else {
@@ -74,7 +80,7 @@ public final class WorldOwnershipHandler implements HttpHandler {
                         ? tunnels.ready(command.worldId, identity, command.tunnelId)
                         : worlds.ready(command.worldId, identity, WorldStore.ReadyStage.valueOf(command.stage), command.baseVersion, null);
                     case STOP -> worlds.stop(command.worldId, identity, WorldStore.StopStage.valueOf(command.stage), command.baseVersion);
-                    case ACQUIRE, CANCEL_CREATION -> throw new IllegalStateException("Already handled action");
+                    case ACQUIRE, CANCEL_CREATION, CHECK_LOCAL_REUSE -> throw new IllegalStateException("Already handled action");
                 };
             }
             JsonWriter writer = new JsonWriter();
@@ -86,7 +92,7 @@ public final class WorldOwnershipHandler implements HttpHandler {
     }
 
     private record Command(String worldId, String deviceId, String requestId, String sessionId, long epoch,
-                           String stage, Long baseVersion, Integer playerCount, String tunnelId) {
+                           String stage, Long baseVersion, Integer playerCount, String tunnelId, Long sourceEpoch) {
 
     }
 
@@ -95,7 +101,7 @@ public final class WorldOwnershipHandler implements HttpHandler {
         Set<String> fields = new HashSet<>();
         String world = null, device = null, request = null, session = null, stage = null, tunnel = null;
         long epoch = 0;
-        Long base = null;
+        Long base = null, sourceEpoch = null;
         Integer players = null;
         reader.beginObject();
         while (reader.hasNext()) {
@@ -107,6 +113,7 @@ public final class WorldOwnershipHandler implements HttpHandler {
                 case "requestId" -> request = reader.nextString();
                 case "sessionId" -> session = reader.nextString();
                 case "epoch" -> epoch = reader.nextLong();
+                case "sourceEpoch" -> sourceEpoch = reader.nextLong();
                 case "stage" -> stage = reader.nextString();
                 case "baseVersion" -> {
                     if (reader.peek() == JsonToken.NULL) reader.nextNull();
@@ -120,7 +127,10 @@ public final class WorldOwnershipHandler implements HttpHandler {
         reader.endObject();
         reader.finish();
         Set<String> required = new HashSet<>();
-        if (action == Action.ACQUIRE) required.addAll(Set.of("worldId", "deviceId", "requestId"));
+        if (action == Action.ACQUIRE) {
+            required.addAll(Set.of("worldId", "deviceId", "requestId"));
+            if (sourceEpoch != null) required.addAll(Set.of("sourceEpoch", "baseVersion"));
+        } else if (action == Action.CHECK_LOCAL_REUSE) required.addAll(Set.of("worldId", "deviceId", "sourceEpoch", "baseVersion"));
         else {
             required.addAll(IDENTITY_FIELDS);
             if (epoch < 1) throw new IllegalArgumentException("Invalid epoch");
@@ -147,8 +157,10 @@ public final class WorldOwnershipHandler implements HttpHandler {
         WorldStore.validateId(device);
         if (action == Action.ACQUIRE) WorldStore.validateId(request);
         if (base != null && base < 1) throw new IllegalArgumentException("Invalid base version");
+        if (sourceEpoch != null && (sourceEpoch < 1 || sourceEpoch > Long.MAX_VALUE - 2))
+            throw new IllegalArgumentException("Invalid local source epoch");
         if (players != null && players < 0) throw new IllegalArgumentException("Invalid player count");
-        return new Command(world, device, request, session, epoch, stage, base, players, tunnel);
+        return new Command(world, device, request, session, epoch, stage, base, players, tunnel, sourceEpoch);
     }
 
 }

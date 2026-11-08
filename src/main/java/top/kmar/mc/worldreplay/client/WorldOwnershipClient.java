@@ -59,6 +59,11 @@ final class WorldOwnershipClient {
         body.addProperty("worldId", session.worldId());
         body.addProperty("deviceId", session.deviceId());
         body.addProperty("requestId", session.requestId());
+        var source = session.localSource();
+        if (source != null) {
+            body.addProperty("sourceEpoch", source.epoch());
+            addBase(body, source.baseVersion());
+        }
         View view = parse(post(settings, user, "acquire", body, false));
         view.checkSession(session);
         return view;

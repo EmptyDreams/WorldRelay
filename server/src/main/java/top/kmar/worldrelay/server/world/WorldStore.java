@@ -219,6 +219,31 @@ public final class WorldStore implements AutoCloseable {
 
     public synchronized Acquisition acquire(String worldId, String username, String deviceId, String requestId)
         throws IOException, WorldAccessException {
+        return acquire(worldId, username, deviceId, requestId, null, null);
+    }
+
+    /** 预览只读；真正授予本地存档的新任期时还须在 acquire 的同一原子边界内复核。 */
+    public synchronized boolean canReuseLocal(String worldId, String username, String deviceId, long sourceEpoch, Long baseVersion)
+        throws WorldAccessException {
+        UserStore.validateUsername(username);
+        validateId(deviceId);
+        return canReuseLocal(entry(worldId), username, deviceId, sourceEpoch, baseVersion);
+    }
+
+    private static boolean canReuseLocal(Entry entry, String username, String deviceId, long sourceEpoch, Long baseVersion) {
+        var state = entry.metadata.state();
+        if (sourceEpoch < 1 || sourceEpoch > Long.MAX_VALUE - 2 || entry.restore != null || state.phase() != WorldPhase.FREE
+            || state.epoch() != sourceEpoch + 1 || !Objects.equals(baseVersion, state.committedVersion())
+            || entry.metadata.cancellations().isEmpty()) return false;
+        var last = entry.metadata.cancellations().getLast();
+        return last.epoch() == sourceEpoch && last.owner().username().equals(username) && last.owner().deviceId().equals(deviceId);
+    }
+
+    public synchronized Acquisition acquire(
+        String worldId, String username, String deviceId, String requestId,
+        Long sourceEpoch, Long sourceBaseVersion
+    )
+        throws IOException, WorldAccessException {
         UserStore.validateUsername(username);
         validateId(deviceId);
         validateId(requestId);
@@ -244,6 +269,8 @@ public final class WorldStore implements AutoCloseable {
             }
             throw conflict("WORLD_OWNED", "World already has an owner");
         }
+        if (sourceEpoch != null && !canReuseLocal(entry, username, deviceId, sourceEpoch, sourceBaseVersion))
+            throw conflict("LOCAL_REUSE_NOT_ALLOWED", "World has another hosting term or its committed version changed");
         if (state.epoch() == Long.MAX_VALUE) throw conflict("EPOCH_EXHAUSTED", "World epoch is exhausted");
         var owner = new WorldMetadata.Owner(username, deviceId, UUID.randomUUID().toString(), requestId);
         persist(entry, new WorldMetadata.State(state.epoch() + 1, WorldPhase.PREPARING, owner,

@@ -208,6 +208,36 @@ class WorldOwnershipHttpTest {
         }
     }
 
+    /** 本地来源预览校验原持有者，获取必须携带完整条件；别人未上传就取消也会永久阻止使用该旧来源。 */
+    @Test
+    void checksLocalSourceAndRejectsItAfterAnotherHostingTerm() throws Exception {
+        try (var client = HttpClient.newHttpClient(); var service = new WorldRelayService(config())) {
+            service.start();
+            var first = send(client, post(service, "acquire", acquireFields(world, device, request), auth));
+            assertEquals(201, first.statusCode());
+            String previous = identity(world, device, field(first.body(), "sessionId"));
+            assertEquals(204, send(client, post(service, "cancel-creation", previous, auth)).statusCode());
+            String source = "\"worldId\":\"" + world + "\",\"deviceId\":\"" + device + "\",\"sourceEpoch\":1,\"baseVersion\":null";
+            var preview = send(client, post(service, "check-local-reuse", source, auth));
+            assertEquals(200, preview.statusCode());
+            assertTrue(preview.body().contains("\"allowed\":true"));
+            assertTrue(send(client, post(service, "check-local-reuse", source, guestAuth)).body().contains("\"allowed\":false"));
+            error(send(client, post(service, "acquire", acquireFields(world, device, id()) + ",\"sourceEpoch\":1", auth)),
+                400, "INVALID_OWNERSHIP_REQUEST");
+            String guestDevice = id();
+            var other = send(client, post(service, "acquire", acquireFields(world, guestDevice, id()), guestAuth));
+            assertEquals(201, other.statusCode());
+            String otherIdentity = identity(world, guestDevice, field(other.body(), "sessionId")).replace("\"epoch\":1", "\"epoch\":3");
+            assertEquals(204, send(client, post(service, "cancel-creation", otherIdentity, guestAuth)).statusCode());
+            assertTrue(send(client, post(service, "check-local-reuse", source, auth)).body().contains("\"allowed\":false"));
+            error(send(client, post(service, "acquire", acquireFields(world, device, id()) + ",\"sourceEpoch\":1,\"baseVersion\":null", auth)),
+                409, "LOCAL_REUSE_NOT_ALLOWED");
+            var serverSource = send(client, post(service, "acquire", acquireFields(world, device, id()), auth));
+            assertEquals(201, serverSource.statusCode());
+            assertTrue(serverSource.body().contains("\"epoch\":5"));
+        }
+    }
+
     /**
      * 并发发送不同用户／设备的获取请求，验证只有一个请求成功，其余均收到所有权冲突。
      * 再并发重试同一获取请求，验证仅一次创建会话，其余请求幂等成功且返回同一个 sessionId。

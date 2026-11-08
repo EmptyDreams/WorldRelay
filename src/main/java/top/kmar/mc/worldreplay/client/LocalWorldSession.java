@@ -4,9 +4,27 @@ import java.util.UUID;
 
 /** 会话是恢复记录，不包含 Token。START_REQUESTED 起不允许重新生成或取消创建。 */
 record LocalWorldSession(String worldId, String deviceId, String requestId, String sessionId, long epoch,
-                         Stage stage, String folder, Long baseVersion, String uploadId, String manifestHash) {
+                         Stage stage, String folder, Long baseVersion, String uploadId, String manifestHash, LocalSource localSource) {
 
     enum Stage {ACQUIRING, PREPARING, CANCELLING, CANCELLED, DOWNLOADING, START_REQUESTED, STARTED, STOPPING, STOPPED, UPLOADING, COMMITTED}
+
+    record LocalSource(long epoch, String folder, Long baseVersion) {
+
+        LocalSource {
+            if (epoch < 1) throw new IllegalArgumentException("Invalid local source epoch");
+            if (baseVersion != null && baseVersion < 1) throw new IllegalArgumentException("Invalid local source version");
+            validateFolder(folder);
+            if (folder == null) throw new IllegalArgumentException("Missing local source folder");
+        }
+
+    }
+
+    LocalWorldSession(
+        String worldId, String deviceId, String requestId, String sessionId, long epoch,
+        Stage stage, String folder, Long baseVersion, String uploadId, String manifestHash
+    ) {
+        this(worldId, deviceId, requestId, sessionId, epoch, stage, folder, baseVersion, uploadId, manifestHash, null);
+    }
 
     LocalWorldSession(String worldId, String deviceId, String requestId, String sessionId, long epoch, Stage stage, String folder) {
         this(worldId, deviceId, requestId, sessionId, epoch, stage, folder, null, null, null);
@@ -19,8 +37,9 @@ record LocalWorldSession(String worldId, String deviceId, String requestId, Stri
         if (stage == null || epoch < 0 || (sessionId == null) != (epoch == 0)) throw new IllegalArgumentException("Invalid session");
         if (sessionId != null && !UUID.fromString(sessionId).toString().equals(sessionId)) throw new IllegalArgumentException("Invalid session UUID");
         if (stage != Stage.ACQUIRING && sessionId == null) throw new IllegalArgumentException("Missing ownership");
-        if (folder != null && (folder.isBlank() || folder.equals(".") || folder.equals("..")
-            || folder.contains("/") || folder.contains("\\") || folder.contains(":"))) throw new IllegalArgumentException("Invalid world folder");
+        validateFolder(folder);
+        if (localSource != null && epoch != 0 && localSource.epoch() >= epoch)
+            throw new IllegalArgumentException("Local source is not from an older epoch");
         if ((stage == Stage.START_REQUESTED || stage == Stage.STARTED || stage == Stage.STOPPING) && folder == null) {
             throw new IllegalArgumentException("Missing world folder");
         }
@@ -35,11 +54,12 @@ record LocalWorldSession(String worldId, String deviceId, String requestId, Stri
     }
 
     LocalWorldSession owned(WorldOwnershipClient.View view) {
-        return new LocalWorldSession(worldId, deviceId, requestId, view.sessionId(), view.epoch(), Stage.PREPARING, null, view.baseVersion(), null, null);
+        return new LocalWorldSession(worldId, deviceId, requestId, view.sessionId(), view.epoch(), Stage.PREPARING, null, view.baseVersion(), null, null, localSource);
     }
 
     LocalWorldSession with(Stage next, String target) {
-        return new LocalWorldSession(worldId, deviceId, requestId, sessionId, epoch, next, target, baseVersion, uploadId, manifestHash);
+        return new LocalWorldSession(worldId, deviceId, requestId, sessionId, epoch, next, target, baseVersion, uploadId, manifestHash,
+            next == Stage.STARTED ? null : localSource);
     }
 
     LocalWorldSession uploading(String id, String hash) {
@@ -47,7 +67,7 @@ record LocalWorldSession(String worldId, String deviceId, String requestId, Stri
     }
 
     boolean canOpenCreation() {
-        return baseVersion == null && stage == Stage.PREPARING;
+        return localSource == null && baseVersion == null && stage == Stage.PREPARING;
     }
 
     boolean canResume() {
@@ -55,7 +75,12 @@ record LocalWorldSession(String worldId, String deviceId, String requestId, Stri
     }
 
     boolean canCancel() {
-        return baseVersion == null && (stage == Stage.PREPARING || stage == Stage.CANCELLING);
+        return localSource == null && baseVersion == null && (stage == Stage.PREPARING || stage == Stage.CANCELLING);
+    }
+
+    private static void validateFolder(String folder) {
+        if (folder != null && (folder.isBlank() || folder.equals(".") || folder.equals("..")
+            || folder.contains("/") || folder.contains("\\") || folder.contains(":"))) throw new IllegalArgumentException("Invalid world folder");
     }
 
 }

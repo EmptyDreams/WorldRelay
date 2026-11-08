@@ -68,18 +68,23 @@ public final class SharedWorldCreation {
         UUID profile = client.getUser().getProfileId();
         Path game = client.gameDirectory.toPath();
         IO.execute(() -> {
+            ClientConnectionSettings settings = null;
+            LocalWorldSessionStore store = null;
+            LocalWorldSession session = null;
             try {
-                var settings = ClientConnectionSettings.load(game.resolve("config/worldrelay-client.json"));
+                settings = ClientConnectionSettings.load(game.resolve("config/worldrelay-client.json"));
                 var current = SharedWorldListClient.fetch(settings, user).stream().filter(world -> world.worldId().equals(worldId)).findFirst()
                     .orElseThrow(() -> new IOException("World is unavailable"));
-                if (current.status().equals("RUNNING") && !user.equals(current.hostName())) {
-                    joinGuest(parent, settings, user, worldId, worldName);
-                    return;
-                }
                 LocalWorldSessionStore.lockGame(game);
-                var store = new LocalWorldSessionStore(game, settings.serverUri().toString(), user, profile, worldId);
-                var session = store.read();
-                if (current.status().equals("RUNNING") && (session == null || !session.canResume())) {
+                store = new LocalWorldSessionStore(game, settings.serverUri().toString(), user, profile, worldId);
+                session = store.read();
+                boolean ownedSession = session != null && session.sessionId() != null
+                    && session.stage() != LocalWorldSession.Stage.CANCELLED && session.stage() != LocalWorldSession.Stage.COMMITTED;
+                if (ownedSession && session.stage() != LocalWorldSession.Stage.UPLOADING && session.stage() != LocalWorldSession.Stage.CANCELLING) {
+                    // 旧获取请求的去重记录可能已淘汰；先检查持有关系，不能用旧请求重新获得所有权。
+                    WorldOwnershipClient.command(settings, user, session, "heartbeat", null);
+                }
+                if (current.status().equals("RUNNING") && !ownedSession) {
                     joinGuest(parent, settings, user, worldId, worldName);
                     return;
                 }
@@ -114,6 +119,7 @@ public final class SharedWorldCreation {
                         var creation = new Creation(parent, user, profile, settings, store, session);
                         creation.worldDirectory = prepared.directory();
                         creation.storage = LevelStorageSource.createDefault(store.saves(session.epoch()));
+                        creation.confirmPlayerData();
                         creation.save(session.with(LocalWorldSession.Stage.STARTED, session.folder()));
                         if (active != null) {
                             active.stopHeartbeat();
@@ -127,12 +133,13 @@ public final class SharedWorldCreation {
                         });
                     } catch (Exception failure) {
                         WorldRelay.LOGGER.warn("Shared world recovery did not complete; local files are retained", failure);
+                        if (SharedWorldRecovery.ownershipLost(failure)) {
+                            offerReplacement(parent, settings, user, store, session);
+                            return;
+                        }
                         client.execute(() -> {
                             joining = false;
-                            String message = failure instanceof WorldOwnershipClient.RequestException rejected
-                                && java.util.Set.of("STALE_EPOCH", "OWNER_MISMATCH", "SESSION_MISMATCH", "WORLD_NOT_OWNED").contains(rejected.code())
-                                ? "ownership_lost" : "recovery_failed";
-                            show(parent, message, false, () -> join(parent, worldId, worldName));
+                            show(parent, "recovery_failed", false, () -> join(parent, worldId, worldName));
                         });
                     }
                     return;
@@ -169,14 +176,15 @@ public final class SharedWorldCreation {
                     }
                     throw failure;
                 }
-                if (!view.phase().equals("PREPARING") && !(session.stage() == LocalWorldSession.Stage.DOWNLOADING && view.phase().equals("STARTING"))) {
+                if (!view.phase().equals("PREPARING") && !((session.stage() == LocalWorldSession.Stage.DOWNLOADING || session.localSource() != null)
+                    && view.phase().equals("STARTING"))) {
                     client.execute(() -> {
                         joining = false;
                         show(parent, "unfinished", false, null);
                     });
                     return;
                 }
-                if (session.stage() != LocalWorldSession.Stage.DOWNLOADING) session = session.owned(view);
+                if (session.stage() != LocalWorldSession.Stage.DOWNLOADING) session = LocalWorldReplacement.acceptOwnership(session, view);
                 else view.checkSession(session);
                 store.write(session);
                 var creation = new Creation(parent, user, profile, settings, store, session);
@@ -184,7 +192,12 @@ public final class SharedWorldCreation {
                 if (previous != null) previous.stopHeartbeat();
                 active = creation;
                 creation.startHeartbeat(view.heartbeatIntervalSeconds());
-                if (view.hasSave()) {
+                if (session.localSource() != null) {
+                    client.execute(() -> {
+                        joining = false;
+                        creation.reuseLocalAndOpen();
+                    });
+                } else if (view.hasSave()) {
                     client.execute(() -> {
                         joining = false;
                         creation.downloadAndOpen();
@@ -205,6 +218,15 @@ public final class SharedWorldCreation {
                     });
                 }
             } catch (Exception failure) {
+                if (settings != null && store != null && session != null && session.localSource() != null
+                    && LocalWorldReplacement.reuseDenied(failure)) {
+                    offerReplacement(parent, settings, user, store, session);
+                    return;
+                }
+                if (settings != null && store != null && session != null && SharedWorldRecovery.ownershipLost(failure)) {
+                    offerReplacement(parent, settings, user, store, session);
+                    return;
+                }
                 WorldRelay.LOGGER.warn("Shared world acquisition did not complete ({})", failure.getClass().getSimpleName());
                 client.execute(() -> {
                     joining = false;
@@ -230,6 +252,67 @@ public final class SharedWorldCreation {
 
     private static void show(Screen parent, String message, boolean pending, Runnable retry) {
         Minecraft.getInstance().setScreen(new SharedWorldOperationScreen(parent, message, pending, retry));
+    }
+
+    /** 仅在服务端明确拒绝旧身份之后调用；选择前保留原会话及本地存档。 */
+    private static void offerReplacement(
+        Screen parent, ClientConnectionSettings settings, String user,
+        LocalWorldSessionStore store, LocalWorldSession previous
+    ) {
+        Creation old = active;
+        if (old != null && old.session.worldId().equals(previous.worldId()) && old.session.epoch() == previous.epoch()) {
+            old.fenced = true;
+            old.stopHeartbeat();
+            if (old.tunnelHost != null) old.tunnelHost.close();
+            active = null;
+        }
+        Minecraft client = Minecraft.getInstance();
+        try {
+            var current = SharedWorldListClient.fetch(settings, user).stream().filter(world -> world.worldId().equals(previous.worldId()))
+                .findFirst().orElseThrow(() -> new IOException("World is unavailable"));
+            boolean free = current.status().equals("FREE"), running = current.status().equals("RUNNING");
+            boolean localAvailable = false;
+            if (free) {
+                try {
+                    localAvailable = LocalWorldReplacement.allowed(settings, user, previous, store);
+                } catch (IOException ignored) { /* 本地存档缺失或仍被占用时，只允许选择服务器来源。 */ }
+            }
+            boolean canUseLocal = localAvailable;
+            client.execute(() -> {
+                joining = false;
+                client.setScreen(new SharedWorldRecoveryScreen(parent, canUseLocal, free || running, running,
+                    () -> replaceSession(parent, store, previous, current.name(), true),
+                    () -> replaceSession(parent, store, previous, current.name(), false)));
+            });
+        } catch (IOException failure) {
+            client.execute(() -> {
+                joining = false;
+                show(parent, "failed", false, () -> join(parent, previous.worldId(), ""));
+            });
+        }
+    }
+
+    private static void replaceSession(
+        Screen parent, LocalWorldSessionStore store, LocalWorldSession previous,
+        String worldName, boolean useLocal
+    ) {
+        if (joining) return;
+        joining = true;
+        show(parent, "acquiring", true, null);
+        IO.execute(() -> {
+            try {
+                LocalWorldReplacement.select(store, previous, useLocal);
+                Minecraft.getInstance().execute(() -> {
+                    joining = false;
+                    join(parent, previous.worldId(), worldName);
+                });
+            } catch (IOException failure) {
+                Minecraft.getInstance().execute(() -> {
+                    joining = false;
+                    show(parent, "recovery_failed", false, () -> join(parent, previous.worldId(), worldName));
+                });
+            }
+        });
     }
 
     public static final class Creation {
@@ -300,27 +383,48 @@ public final class SharedWorldCreation {
             if (heartbeat != null) heartbeat.cancel(false);
         }
 
+        private void reuseLocalAndOpen() {
+            if (busy) return;
+            busy = true;
+            show(parent, "recovering", true, null);
+            IO.execute(() -> {
+                try {
+                    var source = session.localSource();
+                    save(session.with(LocalWorldSession.Stage.PREPARING, source.folder()));
+                    var prepared = LocalWorldReplacement.prepare(settings, user, session, store);
+                    worldDirectory = prepared.directory();
+                    storage = LevelStorageSource.createDefault(store.saves(session.epoch()));
+                    confirmPlayerData();
+                    save(session.with(LocalWorldSession.Stage.STARTED, source.folder()));
+                    Minecraft.getInstance().execute(() -> {
+                        busy = false;
+                        openExisting();
+                    });
+                } catch (Exception failure) {
+                    if (SharedWorldRecovery.ownershipLost(failure)) {
+                        offerReplacement(parent, settings, user, store, session);
+                        return;
+                    }
+                    WorldRelay.LOGGER.warn("Shared world local reuse did not complete; local files and recovery choice are retained", failure);
+                    Minecraft.getInstance().execute(() -> {
+                        busy = false;
+                        show(parent, "recovery_failed", false, () -> join(parent, session.worldId(), ""));
+                    });
+                }
+            });
+        }
+
         private void downloadAndOpen() {
             if (busy) return;
             busy = true;
             show(parent, "downloading", true, null);
             IO.execute(() -> {
                 try {
-                    save(session.with(LocalWorldSession.Stage.DOWNLOADING, "world"));
+                    String folder = session.stage() == LocalWorldSession.Stage.DOWNLOADING ? session.folder() : "world";
+                    save(session.with(LocalWorldSession.Stage.DOWNLOADING, folder));
                     Path game = Minecraft.getInstance().gameDirectory.toPath();
                     worldDirectory = SharedWorldSync.download(game, settings, user, session, store);
-                    var playerData = new SharedPlayerData(worldDirectory);
-                    var check = playerData.check(profile);
-                    if (check.status() == SharedPlayerData.Status.ERROR) throw new IOException("Unreadable shared player data");
-                    if (check.status() == SharedPlayerData.Status.NEEDS_CREATION_CONFIRMATION) {
-                        CompletableFuture<MissingPlayerDataConfirmation.Decision> decision = new CompletableFuture<>();
-                        Minecraft.getInstance().execute(() -> Minecraft.getInstance().setScreen(new ConfirmScreen(confirmed -> {
-                            show(parent, "starting", true, null);
-                            decision.complete(confirmed ? MissingPlayerDataConfirmation.Decision.CREATE : MissingPlayerDataConfirmation.Decision.CANCEL);
-                        }, Component.translatable("worldrelay.creation.player_title"), Component.translatable("worldrelay.creation.player_message"))));
-                        if (playerData.requestCreation(profile, request -> decision).toCompletableFuture().get()
-                            != MissingPlayerDataConfirmation.Decision.CREATE) throw new IOException("Player creation cancelled");
-                    }
+                    confirmPlayerData();
                     var view = WorldOwnershipClient.command(settings, user, session, "ready", "SAVE_SYNCED");
                     if (!view.phase().equals("STARTING") || !java.util.Objects.equals(view.baseVersion(), session.baseVersion())) {
                         throw new IOException("Unexpected start state");
@@ -332,6 +436,10 @@ public final class SharedWorldCreation {
                         openExisting();
                     });
                 } catch (Exception failure) {
+                    if (SharedWorldRecovery.ownershipLost(failure)) {
+                        offerReplacement(parent, settings, user, store, session);
+                        return;
+                    }
                     WorldRelay.LOGGER.warn("Shared world download or start failed; ownership and local files are retained");
                     Minecraft.getInstance().execute(() -> {
                         busy = false;
@@ -342,14 +450,29 @@ public final class SharedWorldCreation {
             });
         }
 
+        private void confirmPlayerData() throws IOException, ExecutionException, InterruptedException {
+            var playerData = new SharedPlayerData(worldDirectory);
+            var check = playerData.check(profile);
+            if (check.status() == SharedPlayerData.Status.ERROR) throw new IOException("Unreadable shared player data");
+            if (check.status() == SharedPlayerData.Status.NEEDS_CREATION_CONFIRMATION) {
+                CompletableFuture<MissingPlayerDataConfirmation.Decision> decision = new CompletableFuture<>();
+                Minecraft.getInstance().execute(() -> Minecraft.getInstance().setScreen(new ConfirmScreen(confirmed -> {
+                    show(parent, "recovering", true, null);
+                    decision.complete(confirmed ? MissingPlayerDataConfirmation.Decision.CREATE : MissingPlayerDataConfirmation.Decision.CANCEL);
+                }, Component.translatable("worldrelay.creation.player_title"), Component.translatable("worldrelay.creation.player_message"))));
+                if (playerData.requestCreation(profile, request -> decision).toCompletableFuture().get()
+                    != MissingPlayerDataConfirmation.Decision.CREATE) throw new IOException("Player creation cancelled");
+            }
+        }
+
         private void openExisting() {
             new WorldOpenFlows(Minecraft.getInstance(), storage).openWorld(session.folder(),
                 () -> show(parent, "recovery_failed", false, null));
         }
 
         private void uploadStopped() {
-            if (fenced) {
-                show(parent, "ownership_lost", false, null);
+            if (fenced && session.stage() != LocalWorldSession.Stage.UPLOADING) {
+                chooseReplacement();
                 return;
             }
             if (busy) return;
@@ -379,6 +502,10 @@ public final class SharedWorldCreation {
                         Minecraft.getInstance().setScreen(parent);
                     });
                 } catch (Exception failure) {
+                    if (SharedWorldRecovery.ownershipLost(failure)) {
+                        offerReplacement(parent, settings, user, store, session);
+                        return;
+                    }
                     WorldRelay.LOGGER.warn("Shared world upload did not complete; snapshot, ownership and retry identity are retained", failure);
                     Minecraft.getInstance().execute(() -> {
                         busy = false;
@@ -388,6 +515,17 @@ public final class SharedWorldCreation {
                     });
                 }
             });
+        }
+
+        private void chooseReplacement() {
+            // 已提交但成功响应丢失时先确认回执，不能误把它当作管理员撤销。
+            if (session.stage() == LocalWorldSession.Stage.UPLOADING) {
+                uploadStopped();
+                return;
+            }
+            finishing = false;
+            show(parent, "recovering", true, null);
+            IO.execute(() -> offerReplacement(parent, settings, user, store, session));
         }
 
         /** 在原版最终确认世界生成之后调用；网络请求完成前不让原版创建世界目录。 */
@@ -426,6 +564,10 @@ public final class SharedWorldCreation {
                         }
                     });
                 } catch (Exception failure) {
+                    if (SharedWorldRecovery.ownershipLost(failure)) {
+                        offerReplacement(parent, settings, user, store, session);
+                        return;
+                    }
                     WorldRelay.LOGGER.warn("Shared world start did not complete; local data and ownership are retained");
                     Minecraft.getInstance().execute(() -> {
                         busy = false;
@@ -455,6 +597,10 @@ public final class SharedWorldCreation {
                         Minecraft.getInstance().setScreen(parent);
                     });
                 } catch (IOException failure) {
+                    if (SharedWorldRecovery.ownershipLost(failure)) {
+                        offerReplacement(parent, settings, user, store, session);
+                        return;
+                    }
                     // 所有 session 写操作都在同一个 IO 线程上，不存在并发的读改写。
                     //noinspection NonAtomicOperationOnVolatileField
                     session = session.with(LocalWorldSession.Stage.CANCELLING, null);
@@ -564,7 +710,7 @@ public final class SharedWorldCreation {
                 Minecraft.getInstance().execute(creation::uploadStopped);
             } catch (Exception failure) {
                 Minecraft.getInstance().execute(() -> {
-                    creation.finishMessage = "save_failed";
+                    creation.finishMessage = creation.fenced ? "ownership_lost" : "save_failed";
                     creation.finishPending = false;
                     creation.finishScreenShown = false;
                 });
@@ -598,6 +744,10 @@ public final class SharedWorldCreation {
         }
         if (creation == null || !creation.finishing || client.level != null || creation.finishScreenShown) return;
         creation.finishScreenShown = true;
+        if (creation.finishMessage.equals("ownership_lost")) {
+            creation.chooseReplacement();
+            return;
+        }
         show(creation.parent, creation.finishMessage, creation.finishPending,
             creation.finishMessage.equals("upload_failed") ? creation::uploadStopped : null);
     }
