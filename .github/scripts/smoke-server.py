@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import socket
 import ssl
 import subprocess
@@ -53,6 +54,22 @@ def websocket(port):
             raise RuntimeError("WebSocket upgrade failed")
 
 
+def stop_server(process, log):
+    if process.poll() is not None:
+        raise RuntimeError(f"Server exited before requested shutdown with {process.returncode}; see {log}")
+    process.terminate()
+    try:
+        process.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        raise RuntimeError(f"Server did not shut down; see {log}")
+    # Python 直接观察到 SIGTERM 时返回负值；Java/GraalVM 的信号处理器也可能返回 128 + SIGTERM。
+    # 只在主动 terminate() 后接受这些结果；Windows terminate() 使用强制终止。
+    if os.name == "posix" and process.returncode not in (0, -signal.SIGTERM, 128 + signal.SIGTERM):
+        raise RuntimeError(f"Server exited with {process.returncode}; see {log}")
+
+
 def run(command, directory, mode, attempt, authorization, world_id):
     config = directory / "server.properties"
     config.write_text(
@@ -98,20 +115,10 @@ def run(command, directory, mode, attempt, authorization, world_id):
                 with socket.create_connection(("127.0.0.1", tunnel), timeout=5) as connection:
                     with context.wrap_socket(connection, server_hostname="localhost") as secure:
                         certificate = secure.getpeercert(binary_form=True)
-            print(f"{mode} startup {attempt}: HTTP, authentication, storage and tunnel passed", flush=True)
-            return authorization, world_id, certificate
         finally:
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=15)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
-                    raise RuntimeError(f"Server did not shut down; see {log}")
-            # Windows terminate() 是强制终止；Linux CI 还需验证 SIGTERM 能正常结束进程。
-            if os.name == "posix" and process.returncode not in (0, -15):
-                raise RuntimeError(f"Server exited with {process.returncode}; see {log}")
+            stop_server(process, log)
+    print(f"{mode} startup {attempt}: HTTP, authentication, storage, tunnel and shutdown passed", flush=True)
+    return authorization, world_id, certificate
 
 
 def main():
