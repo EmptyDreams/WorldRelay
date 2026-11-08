@@ -47,7 +47,11 @@ public final class TunnelGateway implements AutoCloseable {
     }
 
     private record Ticket(Role role, String world, WorldStore.Identity owner, Lease lease, Pending pending,
-                          String guestUser, boolean consent, long expires) {
+                          String guestUser, boolean consent, long expires, long ownerAccess, long guestAccess) {
+
+        Ticket(Role role, String world, WorldStore.Identity owner, Lease lease, Pending pending, String guestUser, boolean consent, long expires) {
+            this(role, world, owner, lease, pending, guestUser, consent, expires, 0, 0);
+        }
 
     }
 
@@ -86,6 +90,7 @@ public final class TunnelGateway implements AutoCloseable {
     private final ConcurrentMap<String, Ticket> tickets = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Lease> leases = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, String> latestHostTickets = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Long> userAccess = new ConcurrentHashMap<>();
     private final SecureRandom random = new SecureRandom();
     private final NioEventLoopGroup acceptor = new NioEventLoopGroup(1, daemon("worldrelay-tunnel-accept"));
     private final NioEventLoopGroup workers = new NioEventLoopGroup(2, daemon("worldrelay-tunnel-io"));
@@ -171,11 +176,14 @@ public final class TunnelGateway implements AutoCloseable {
     }
 
     public Grant join(String world, String username, boolean consent) throws WorldAccessException {
-        top.kmar.worldrelay.server.auth.UserStore.validateUsername(username);
-        WorldStore.Identity owner = worlds.joinTunnelOwner(world);
-        Lease lease = leases.get(world);
-        if (lease == null || !lease.current() || !lease.owner.equals(owner)) throw unavailable();
-        return issue(new Ticket(Role.JOIN, world, owner, lease, null, username, consent, ticker.getAsLong() + TimeUnit.SECONDS.toNanos(60)));
+        synchronized (worlds) {
+            top.kmar.worldrelay.server.auth.UserStore.validateUsername(username);
+            worlds.checkUserAccess(username);
+            WorldStore.Identity owner = worlds.joinTunnelOwner(world);
+            Lease lease = leases.get(world);
+            if (lease == null || !lease.current() || !lease.owner.equals(owner)) throw unavailable();
+            return issue(new Ticket(Role.JOIN, world, owner, lease, null, username, consent, ticker.getAsLong() + TimeUnit.SECONDS.toNanos(60)));
+        }
     }
 
     public OwnershipView ready(String world, WorldStore.Identity owner, String registration) throws IOException, WorldAccessException {
@@ -207,7 +215,8 @@ public final class TunnelGateway implements AutoCloseable {
         byte[] bytes = new byte[32];
         random.nextBytes(bytes);
         String token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
-        tickets.put(token, ticket);
+        tickets.put(token, new Ticket(ticket.role, ticket.world, ticket.owner, ticket.lease, ticket.pending,
+            ticket.guestUser, ticket.consent, ticket.expires, accessEpoch(ticket.owner.username()), accessEpoch(ticket.guestUser)));
         return new Grant(token, Instant.now().plusSeconds(60));
     }
 
@@ -221,11 +230,37 @@ public final class TunnelGateway implements AutoCloseable {
         if (lease != null) lease.close();
     }
 
+    public int connectionCount() {
+        return connectionCount.get();
+    }
+
+    public int hostCount() {
+        return (int) leases.values().stream().filter(Lease::current).count();
+    }
+
+    /** 关闭受禁用用户的房主或访客连接，保留世界所有权。 */
+    public void revokeUser(String username) {
+        synchronized (worlds) {
+            userAccess.merge(username, 1L, Long::sum);
+            tickets.entrySet().removeIf(entry -> entry.getValue().owner.username().equals(username)
+                || username.equals(entry.getValue().guestUser));
+            for (Lease lease : leases.values()) {
+                if (lease.owner.username().equals(username)) invalidate(lease.world);
+                else lease.connections.stream().filter(peer -> username.equals(peer.principal)).forEach(TunnelPeer::close);
+            }
+        }
+    }
+
+    private long accessEpoch(String username) {
+        return username == null ? 0 : userAccess.getOrDefault(username, 0L);
+    }
+
     private final class Peer extends TunnelPeer {
 
         private boolean hello;
         private volatile Lease lease;
         private volatile boolean controller;
+        private volatile String principal;
 
         @Override
         public void channelActive(ChannelHandlerContext ctx) {
@@ -270,6 +305,12 @@ public final class TunnelGateway implements AutoCloseable {
         }
 
         private void activate(Ticket ticket) throws WorldAccessException {
+            if (ticket.ownerAccess != accessEpoch(ticket.owner.username()) || ticket.guestAccess != accessEpoch(ticket.guestUser)) {
+                throw new WorldAccessException(403, "TUNNEL_REVOKED", "Tunnel authorization was revoked");
+            }
+            worlds.checkUserAccess(ticket.owner.username());
+            if (ticket.guestUser != null) worlds.checkUserAccess(ticket.guestUser);
+            principal = ticket.role == Role.HOST ? ticket.owner.username() : ticket.guestUser;
             if (!channel.isActive() || closed.get()) {
                 close();
                 return;

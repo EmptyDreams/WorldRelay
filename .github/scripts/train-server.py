@@ -139,7 +139,7 @@ class Workload:
     def commit(self, owner, user, base, revision, *, corrupt=False):
         self.action("stop", dict(owner, stage="BEGIN"), user=user)
         self.action("stop", dict(owner, stage="UPLOAD_COMPLETE", baseVersion=base), user=user)
-        command, _, payload = self.transfer(owner, user, base, upload=True)
+        command, original_ticket, payload = self.transfer(owner, user, base, upload=True)
         world = payload / "world"
         files = {
             "level.dat": f"synthetic-training-level-{revision}".encode(),
@@ -167,6 +167,13 @@ class Workload:
         command["manifestHash"] = hashlib.sha256(manifest).hexdigest()
         require(self.action("commit-status", command, user=user)["version"] is None, "Uncommitted upload has a receipt")
         if corrupt:
+            self.call("users/disable", {"username": user}, admin=True)
+            self.action("heartbeat", owner, user=user, expected=401)
+            detail = self.action("detail", {"worldId": owner["worldId"]}, admin=True)
+            require(detail["world"]["epoch"] == owner["epoch"], "Disabling user changed ownership")
+            self.call("users/enable", {"username": user}, admin=True)
+            renewed = self.action("upload", {key: value for key, value in command.items() if key != "manifestHash"}, user=user, poll=True)
+            require(renewed["privateKey"] != original_ticket["privateKey"], "Disabled transfer authorization was reused")
             self.action("commit", dict(command, manifestHash="0" * 64), user=user, expected=503, poll=True)
             malformed = b"invalid-manifest-format"
             (payload / "manifest.bin").write_bytes(malformed)
@@ -271,6 +278,35 @@ class Workload:
             self.action(action, {}, admin=True, expected=400)
         self.mark(self.mode + ": authentication, protocol errors and management isolation")
 
+    def management(self):
+        # 验证五类管理接口：查询与统计、用户禁用持久化、改名、确认删除以及错误请求。
+        status = self.call("status", admin=True)
+        require(status["version"] != "unknown", "Build version resource is missing")
+        if status["nativeImage"]:
+            require(0 < status["heap"]["maxBytes"] <= 512 * 1024 * 1024, "Native runtime heap cap is not 512 MiB")
+        accounts = {item["username"]: item for item in self.call("users", admin=True)["users"]}
+        require(not accounts["Disabled"]["enabled"], "Disabled account was not retained across restart")
+        self.call("worlds", user="Disabled", expected=401)
+        self.call("users/enable", {"username": "missing"}, admin=True, expected=404)
+        for path in ("status", "users"):
+            self.call(path, expected=404)
+        for action in ("detail", "history", "rename", "delete-preview", "delete"):
+            self.action(action, {}, admin=True, expected=400)
+        world = self.create(self.mode + " management")
+        require(any(item["worldId"] == world for item in self.call("worlds", admin=True)["worlds"]), "Management list omitted world")
+        self.action("detail", {"worldId": world}, admin=True)
+        preview = self.action("delete-preview", {"worldId": world}, admin=True)
+        renamed = self.action("rename", {"worldId": world, "expectedName": self.mode + " management", "name": self.mode + " renamed"}, admin=True)
+        require(renamed["world"]["worldId"] == world, "Rename changed world identity")
+        self.action("delete", dict(preview, confirm=True), admin=True, expected=409)
+        preview = self.action("delete-preview", {"worldId": world}, admin=True)
+        self.action("delete", preview, admin=True, expected=400)
+        confirmed = dict(preview, confirm=True)
+        deleted = self.action("delete", confirmed, admin=True)
+        require(self.action("delete", confirmed, admin=True) == deleted, "Deletion retry differs")
+        self.action("detail", {"worldId": world}, admin=True, expected=404)
+        self.mark(self.mode + ": management queries, user status, rename and confirmed deletion")
+
     def scenario(self):
         self.protocol_errors()
         name = self.mode + " PGO 世界"
@@ -337,6 +373,12 @@ class Workload:
         receipt = self.commit(final_owner, "Host", 3, 4)
         backups = self.action("backups", {"worldId": world}, admin=True)
         require(backups["currentVersion"] == 4, "Backup list lost current authority")
+        history = self.action("history", {"worldId": world}, admin=True)
+        require({"COMMIT", "RESTORE", "ABANDON"}.issubset({item["type"] for item in history["events"]}), "Management history omitted events")
+        page = self.action("history", {"worldId": world, "limit": 1}, admin=True)
+        require(page["hasMore"], "History page cursor is missing")
+        older = self.action("history", {"worldId": world, "limit": 1, "beforeEpoch": page["nextBeforeEpoch"]}, admin=True)
+        require(older["events"][0]["epoch"] < page["events"][0]["epoch"], "History pagination did not advance")
         self.action("abandon-preview", {"worldId": world}, admin=True, expected=409)
         self.mark(self.mode + ": revocation, stale epoch, local reuse fencing and retention")
 
@@ -345,6 +387,7 @@ class Workload:
         self.action("cancel-creation", cancelled, expected=204)
         self.action("cancel-creation", cancelled, expected=204)
         require(self.worlds()[cancelled_world]["status"] == "FREE", "Cancelled creation retained ownership")
+        require(self.action("history", {"worldId": cancelled_world}, admin=True)["events"][0]["type"] == "CANCEL_CREATION", "Cancellation history is missing")
         recovery_world = self.create(self.mode + " restart recovery")
         pending, _, _ = self.acquire(recovery_world)
         self.action("ready", dict(pending, stage="SAVE_SYNCED", baseVersion=None))
@@ -418,6 +461,9 @@ def main():
                 workload.call("register", {"username": "Guest"}, admin=True, expected=409)
                 workload.register("Guest", overwrite=True)
                 workload.call("worlds", headers={"Authorization": old_auth}, expected=401)
+                workload.register("Disabled")
+                workload.call("users/disable", {"username": "Disabled"}, admin=True)
+            workload.management()
             if pending is not None:
                 reloaded = workload.recover(receipt, pending)
                 if certificate is not None:

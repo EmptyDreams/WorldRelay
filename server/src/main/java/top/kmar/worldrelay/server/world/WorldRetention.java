@@ -93,6 +93,16 @@ public final class WorldRetention implements AutoCloseable {
         }
     }
 
+    public synchronized WorldStore.Deletion previewDeletion(String worldId) throws IOException, WorldAccessException {
+        if (activeOperations.containsKey(worldId)) throw new WorldAccessException(409, "WORLD_BUSY", "World has an active file operation");
+        return worlds.previewDeletion(worldId);
+    }
+
+    public synchronized Instant delete(WorldStore.Deletion request) throws IOException, WorldAccessException {
+        if (activeOperations.containsKey(request.worldId())) throw new WorldAccessException(409, "WORLD_BUSY", "World has an active file operation");
+        return worlds.delete(request);
+    }
+
     private void backgroundSweep() {
         try {
             sweep();
@@ -203,7 +213,7 @@ public final class WorldRetention implements AutoCloseable {
 
     private void cleanTemporary() throws IOException {
         Instant cutoff = clock.instant().minus(Duration.ofHours(config.temporaryHours()));
-        cleanChildren(worlds.directory(), null, null, false, cutoff, ".creating-");
+        cleanChildren(worlds.directory(), null, null, false, cutoff, ".creating-", ".deleted-");
         for (var world : worlds.retentionWorlds()) {
             if (world.unavailable() || activeOperations.containsKey(world.metadata().worldId())) continue;
             String id = world.metadata().worldId();

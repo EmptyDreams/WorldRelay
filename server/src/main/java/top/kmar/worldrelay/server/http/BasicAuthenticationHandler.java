@@ -28,6 +28,7 @@ public final class BasicAuthenticationHandler implements HttpHandler {
 
     @Override
     public void handle(HttpExchange exchange) throws IOException {
+        exchange.getResponseHeaders().set("Cache-Control", "no-store");
         String username = authenticate(exchange.getRequestHeaders().get("Authorization"));
         if (username == null) {
             exchange.getResponseHeaders().set("WWW-Authenticate", CHALLENGE);

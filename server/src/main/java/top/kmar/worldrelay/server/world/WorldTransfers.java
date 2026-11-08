@@ -84,7 +84,7 @@ public final class WorldTransfers {
                 worlds.prepareTransfer(worldId, owner, base, upload);
                 if (Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException("Transfer preparation interrupted");
                 String keyId = keyId(worldId, owner, uploadId, upload);
-                return new Ticket(keyId, users.issueTransferKey(owner.username(), keyId, payload, !upload),
+                return new Ticket(keyId, users.issueTransferKey(owner.username(), keyId, payload, !upload, worldId),
                     RsyncCommand.create(ssh.publicHost(), ssh.publicPort(), ssh.transferUser(), upload), hostKey,
                     source == null ? null : source.manifestHash());
             }

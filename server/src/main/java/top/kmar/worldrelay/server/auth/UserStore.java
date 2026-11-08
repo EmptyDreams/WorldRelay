@@ -1,6 +1,7 @@
 package top.kmar.worldrelay.server.auth;
 
 import top.kmar.worldrelay.server.json.JsonReader;
+import top.kmar.worldrelay.server.json.JsonToken;
 import top.kmar.worldrelay.server.json.JsonWriter;
 
 import java.io.IOException;
@@ -36,8 +37,11 @@ public final class UserStore implements AutoCloseable {
     private final OpenSshCapabilities.ExpiryTime expiryTime;
     private final SecureRandom random = new SecureRandom();
     private final Map<String, byte[]> users = new TreeMap<>();
+    private final Set<String> disabled = new HashSet<>();
     private byte[] usersImage;
     private final Map<String, Instant> transferKeyExpiry = new HashMap<>();
+    private final Map<String, String> transferKeyUsers = new HashMap<>();
+    private final Map<String, String> transferKeyWorlds = new HashMap<>();
     private ScheduledExecutorService keyExpiryWorker;
     private boolean closed;
 
@@ -123,7 +127,7 @@ public final class UserStore implements AutoCloseable {
         byte[] hash = digest(key);
         Map<String, byte[]> updated = new TreeMap<>(users);
         updated.put(username, hash);
-        byte[] afterUsers = serialize(updated);
+        byte[] afterUsers = serialize(updated, disabled);
         files.commit(username, existing, usersImage, afterUsers, beforeKeys, beforeKeys);
         users.put(username, hash);
         usersImage = afterUsers;
@@ -137,13 +141,68 @@ public final class UserStore implements AutoCloseable {
         byte[] actual = digest(key);
         // 未知用户名也计算摘要并进行定长比较；不向调用方区分失败原因。
         boolean matches = MessageDigest.isEqual(expected == null ? new byte[32] : expected, actual);
-        return expected != null && matches;
+        return expected != null && matches && !disabled.contains(username);
+    }
+
+    public record Account(String username, boolean enabled, long transferAuthorizations) {
+
+    }
+
+    public synchronized List<Account> list() {
+        ensureOpen();
+        return users.keySet().stream().map(this::account).toList();
+    }
+
+    private Account account(String username) {
+        return new Account(username, !disabled.contains(username),
+            transferKeyUsers.values().stream().filter(username::equals).count());
+    }
+
+    public synchronized boolean isEnabled(String username) {
+        return !closed && !files.isNotHealthy() && users.containsKey(username) && !disabled.contains(username);
+    }
+
+    /** 用户状态与临时公钥在同一恢复事务中发布；不改变任何世界的所有权。 */
+    public synchronized Account setEnabled(String username, boolean enabled) throws IOException {
+        ensureOpen();
+        validateUsername(username);
+        if (!users.containsKey(username)) return null;
+        if (files.isNotHealthy()) throw new IOException("User management requires recovery");
+        var nextDisabled = new HashSet<>(disabled);
+        if (enabled) nextDisabled.remove(username);
+        else nextDisabled.add(username);
+        byte[] beforeKeys = RegistrationFiles.read(files.keys);
+        byte[] afterKeys = beforeKeys;
+        List<String> revoked = enabled ? List.of() : transferKeyUsers.entrySet().stream()
+            .filter(entry -> entry.getValue().equals(username)).map(Map.Entry::getKey).toList();
+        if (beforeKeys != null && !revoked.isEmpty()) {
+            String text = RegistrationFiles.utf8(beforeKeys);
+            for (String id : revoked) {
+                text = removeTransferKey(text, "worldrelay-transfer:" + id);
+            }
+            afterKeys = text.getBytes(StandardCharsets.UTF_8);
+        }
+        byte[] afterUsers = serialize(users, nextDisabled);
+        if (!Arrays.equals(usersImage, afterUsers) || !Arrays.equals(beforeKeys, afterKeys)) {
+            files.commit(username, true, usersImage, afterUsers, beforeKeys, afterKeys);
+            usersImage = afterUsers;
+        }
+        disabled.clear();
+        disabled.addAll(nextDisabled);
+        for (String id : revoked) {
+            forgetTransfer(id);
+        }
+        return account(username);
     }
 
     /** HTTP 已验证持有者后签发目录专用的短期密钥，不授予权威目录访问权。 */
     public synchronized String issueTransferKey(String username, String transferId, Path directory, boolean readOnly) throws IOException {
+        return issueTransferKey(username, transferId, directory, readOnly, null);
+    }
+
+    public synchronized String issueTransferKey(String username, String transferId, Path directory, boolean readOnly, String worldId) throws IOException {
         ensureOpen();
-        if (!users.containsKey(username)) throw new IOException("Unknown transfer user");
+        if (!isEnabled(username)) throw new IOException("Transfer user is unavailable");
         if (!java.util.UUID.fromString(transferId).toString().equals(transferId)) throw new IllegalArgumentException("Invalid transfer ID");
         Path sessions = ssh.transferDirectory().toAbsolutePath().normalize().resolve(".sessions");
         Path canonical = directory.toRealPath();
@@ -176,6 +235,8 @@ public final class UserStore implements AutoCloseable {
         if (line.getBytes(StandardCharsets.UTF_8).length > 8192) throw new IOException("SSH transfer authorization is too long");
         files.replaceKeys(before, (retained + (retained.isEmpty() || retained.endsWith("\n") ? "" : "\n") + line).getBytes(StandardCharsets.UTF_8));
         transferKeyExpiry.put(transferId, expires);
+        transferKeyUsers.put(transferId, username);
+        if (worldId != null) transferKeyWorlds.put(transferId, worldId);
         if (keyExpiryWorker == null) {
             keyExpiryWorker = Executors.newSingleThreadScheduledExecutor(task -> {
                 Thread thread = new Thread(task, "worldrelay-transfer-key-expiry");
@@ -197,11 +258,27 @@ public final class UserStore implements AutoCloseable {
         ensureOpen();
         if (!java.util.UUID.fromString(transferId).toString().equals(transferId)) throw new IllegalArgumentException("Invalid transfer ID");
         byte[] before = RegistrationFiles.read(files.keys);
-        if (before == null) return;
+        if (before == null) {
+            forgetTransfer(transferId);
+            return;
+        }
         String original = RegistrationFiles.utf8(before);
         String updated = removeTransferKey(original, "worldrelay-transfer:" + transferId);
         if (!original.equals(updated)) files.replaceKeys(before, updated.getBytes(StandardCharsets.UTF_8));
-        transferKeyExpiry.remove(transferId);
+        forgetTransfer(transferId);
+    }
+
+    private void forgetTransfer(String id) {
+        transferKeyExpiry.remove(id);
+        transferKeyUsers.remove(id);
+        transferKeyWorlds.remove(id);
+    }
+
+    public synchronized void revokeWorldTransfers(String worldId) throws IOException {
+        for (String id : transferKeyWorlds.entrySet().stream().filter(entry -> entry.getValue().equals(worldId))
+            .map(Map.Entry::getKey).toList()) {
+            revokeTransferKey(id);
+        }
     }
 
     synchronized void expireTransferKeys(Instant now) throws IOException {
@@ -221,6 +298,8 @@ public final class UserStore implements AutoCloseable {
         }
         if (!original.contentEquals(retained)) files.replaceKeys(before, retained.toString().getBytes(StandardCharsets.UTF_8));
         transferKeyExpiry.clear();
+        transferKeyUsers.clear();
+        transferKeyWorlds.clear();
     }
 
     private void hardenRegisteredKeys() throws IOException {
@@ -263,7 +342,16 @@ public final class UserStore implements AutoCloseable {
             while (reader.hasNext()) {
                 String username = reader.nextName();
                 validateUsername(username);
-                String hash = reader.nextString();
+                String hash;
+                if (reader.peek() == JsonToken.STRING) hash = reader.nextString();
+                else {
+                    reader.beginObject();
+                    if (!reader.nextName().equals("tokenHash")) throw new IllegalArgumentException();
+                    hash = reader.nextString();
+                    if (!reader.nextName().equals("enabled")) throw new IllegalArgumentException();
+                    if (!reader.nextBoolean()) disabled.add(username);
+                    reader.endObject();
+                }
                 if (!hash.matches("[0-9a-f]{64}")) {
                     throw new IllegalArgumentException("Invalid key digest");
                 }
@@ -277,9 +365,14 @@ public final class UserStore implements AutoCloseable {
         }
     }
 
-    private static byte[] serialize(Map<String, byte[]> updated) {
+    private static byte[] serialize(Map<String, byte[]> updated, Set<String> disabled) {
         JsonWriter writer = new JsonWriter().beginObject();
-        updated.forEach((username, hash) -> writer.name(username).value(HexFormat.of().formatHex(hash)));
+        updated.forEach((username, hash) -> {
+            writer.name(username);
+            if (disabled.contains(username)) writer.beginObject().name("tokenHash").value(HexFormat.of().formatHex(hash))
+                .name("enabled").value(false).endObject();
+            else writer.value(HexFormat.of().formatHex(hash));
+        });
         return writer.endObject().finish().getBytes(StandardCharsets.UTF_8);
     }
 

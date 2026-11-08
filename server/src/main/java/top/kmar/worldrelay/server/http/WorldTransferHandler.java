@@ -57,7 +57,7 @@ public final class WorldTransferHandler implements HttpHandler {
             } else {
                 // 未授权请求不进入后台队列；长任务开始和完成时仍会再次校验任期。
                 transfers.authorize(command.world, owner, command.base, command.transfer, command.hash, action != Action.DOWNLOAD);
-                response = jobs.poll(jobKey, () -> execute(command, owner));
+                response = jobs.poll(jobKey, command.world, owner.username(), action.name(), () -> execute(command, owner));
             }
             HttpResponses.bytes(exchange, response == null ? 202 : 200, "application/json; charset=utf-8",
                 (response == null ? "{\"pending\":true}" : response).getBytes(StandardCharsets.UTF_8));

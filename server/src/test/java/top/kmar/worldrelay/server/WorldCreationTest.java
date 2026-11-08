@@ -33,9 +33,9 @@ class WorldCreationTest {
     }
 
     /**
-     * 验证本机无需凭据即可创建世界，重复名称返回 409，业务列表仍需鉴权且两个端口的方法互相隔离；
+     * 验证本机无需凭据即可创建及查询世界，重复名称返回 409，业务列表仍需鉴权且禁止创建；
      * 世界记录和名称约束重启后保留，停服删除一个目录后只移除目标世界，原用户凭据仍可查询列表。
-     * 列表认证使用普通注册返回的 API 密钥，覆盖注册接口同时生成 SSH 凭据后的世界管理回归场景。
+     * 列表认证使用普通注册返回的 API 密钥，覆盖真实用户身份下的世界管理流程。
      */
     @Test
     void createsLocallyRejectsDuplicateNamesAndPersistsUntilFolderDeletion() throws Exception {
@@ -69,7 +69,7 @@ class WorldCreationTest {
                 assertNotEquals(first, second);
                 assertEquals(Stream.of(first, second).sorted().toList(), listIds(list(client, service, auth).body()));
 
-                // 业务端口不能创建世界，本机管理端口也不提供世界列表。
+                // 业务端口不能创建世界，管理列表无需玩家凭据并返回相同的世界 ID。
                 URI business = uri(service.apiAddress().getPort(), "/api/v1/worlds");
                 var post = HttpRequest.newBuilder(business).POST(HttpRequest.BodyPublishers.ofString("{\"name\":\"禁止\"}"));
                 assertEquals(401, client.send(post.build(), HttpResponse.BodyHandlers.ofString()).statusCode());
@@ -78,8 +78,8 @@ class WorldCreationTest {
                 assertEquals("GET", wrongPort.headers().firstValue("Allow").orElseThrow());
                 var localGet = client.send(HttpRequest.newBuilder(uri(service.registrationAddress().getPort(),
                     "/api/v1/worlds")).GET().build(), HttpResponse.BodyHandlers.ofString());
-                assertEquals(405, localGet.statusCode());
-                assertEquals("POST", localGet.headers().firstValue("Allow").orElseThrow());
+                assertEquals(200, localGet.statusCode());
+                assertEquals(Stream.of(first, second).sorted().toList(), listIds(localGet.body()));
             }
             try (WorldRelayService restarted = new WorldRelayService(config())) {
                 restarted.start();

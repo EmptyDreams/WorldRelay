@@ -25,6 +25,15 @@ public final class WorldStore implements AutoCloseable {
 
     private java.util.function.Consumer<String> tunnelInvalidated = ignored -> {};
     private java.util.function.Predicate<String> tunnelAvailable = ignored -> true;
+    private java.util.function.Predicate<String> userEnabled = ignored -> true;
+
+    public synchronized void configureUsers(java.util.function.Predicate<String> enabled) {
+        userEnabled = Objects.requireNonNull(enabled);
+    }
+
+    public synchronized void checkUserAccess(String username) throws WorldAccessException {
+        if (!userEnabled.test(username)) throw new WorldAccessException(403, "USER_DISABLED", "User access is disabled");
+    }
 
     /** 回调只进行内存状态更新与异步关闭，不得在存储锁中等待网络。 */
     public synchronized void configureTunnels(java.util.function.Consumer<String> invalidated, java.util.function.Predicate<String> available) {
@@ -94,6 +103,7 @@ public final class WorldStore implements AutoCloseable {
         WorldMetadata metadata;
         boolean seen;
         long lastSeen;
+        Instant lastContactAt;
         boolean joinReady;
         Integer players;
         boolean unavailable;
@@ -188,6 +198,123 @@ public final class WorldStore implements AutoCloseable {
         return worlds.values().stream().map(this::summary).toList();
     }
 
+    record AdminState(WorldMetadata metadata, String status, boolean online, boolean unavailable,
+                      Instant lastContactAt, boolean restoring, Integer players) {
+
+    }
+
+    synchronized List<AdminState> adminStates() {
+        ensureOpen();
+        return worlds.values().stream().map(this::adminState).toList();
+    }
+
+    synchronized AdminState adminState(String worldId) throws WorldAccessException {
+        ensureOpen();
+        validateId(worldId);
+        Entry entry = worlds.get(worldId);
+        if (entry == null) throw new WorldAccessException(404, "WORLD_NOT_FOUND", "World not found");
+        return adminState(entry);
+    }
+
+    private AdminState adminState(Entry entry) {
+        boolean online = entry.metadata.state().owner() != null && online(entry, ticker.getAsLong());
+        return new AdminState(entry.metadata, status(entry), online, entry.unavailable, entry.lastContactAt,
+            entry.restore != null, entry.players);
+    }
+
+    public synchronized void rename(String worldId, String expectedName, String name) throws IOException, WorldAccessException {
+        validateName(expectedName);
+        validateName(name);
+        Entry entry = entry(worldId);
+        if (entry.metadata.name().equals(name)) return;
+        if (!entry.metadata.name().equals(expectedName)) throw conflict("WORLD_CHANGED", "World name changed; query it again");
+        if (names.contains(name)) throw conflict("WORLD_NAME_EXISTS", "World name already exists");
+        var old = entry.metadata;
+        try {
+            persist(entry, new WorldMetadata(worldId, name, old.createdAt(), old.state(), old.cancellations(), old.commits()));
+        } catch (IOException | RuntimeException | Error failure) {
+            if (entry.unavailable) names.add(name); // 不确定是否发布成功时，两种名称都不能分配给另一世界。
+            throw failure;
+        }
+        names.remove(expectedName);
+        names.add(name);
+    }
+
+    private Entry deletable(String worldId) throws WorldAccessException {
+        Entry entry = entry(worldId);
+        if (entry.metadata.state().owner() != null) throw conflict("WORLD_OWNED", "Owned worlds cannot be deleted");
+        if (entry.restore != null) throw conflict("RESTORE_IN_PROGRESS", "A backup restore is in progress");
+        return entry;
+    }
+
+    public record Deletion(String worldId, String deleteId, String expectedName, long expectedEpoch,
+                           Long expectedVersion, String metadataHash) {
+
+        public Deletion {
+            validateId(worldId);
+            validateId(deleteId);
+            validateName(expectedName);
+            if (expectedEpoch < 0 || expectedVersion != null && expectedVersion < 1
+                || metadataHash == null || !metadataHash.matches("[0-9a-f]{64}")) throw new IllegalArgumentException("Invalid deletion preview");
+        }
+
+    }
+
+    synchronized Deletion previewDeletion(String worldId) throws IOException, WorldAccessException {
+        var metadata = deletable(worldId).metadata;
+        return new Deletion(worldId, UUID.randomUUID().toString(), metadata.name(), metadata.state().epoch(),
+            metadata.state().committedVersion(), metadataHash(root.resolve(worldId)));
+    }
+
+    private String metadataHash(Path directory) throws IOException {
+        requireLocalPath(directory, true);
+        Path file = directory.resolve("world.json");
+        requireLocalPath(file, false);
+        return SnapshotFiles.hashFile(file);
+    }
+
+    /** 在所有权锁内原子撤下目录；回收目录继续由既有临时目录保留策略管理。 */
+    synchronized Instant delete(Deletion request) throws IOException, WorldAccessException {
+        ensureOpen();
+        Path source = root.resolve(request.worldId());
+        Path target = root.resolve(".deleted-" + request.worldId() + "-" + request.deleteId());
+        Entry existing = worlds.get(request.worldId());
+        if (existing == null && Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+            if (!metadataHash(target).equals(request.metadataHash())) throw conflict("DELETE_CONFLICT", "Deletion request differs");
+            var archived = WorldMetadata.parse(Files.readString(target.resolve("world.json"), StandardCharsets.UTF_8));
+            if (deletionDiffers(archived, request)) throw conflict("DELETE_CONFLICT", "Deletion request differs");
+            SnapshotFiles.forceDirectory(root);
+            return Files.getLastModifiedTime(target, LinkOption.NOFOLLOW_LINKS).toInstant();
+        }
+        Entry entry = deletable(request.worldId());
+        var metadata = entry.metadata;
+        if (deletionDiffers(metadata, request)
+            || !metadataHash(source).equals(request.metadataHash())) throw conflict("WORLD_CHANGED", "World changed; preview deletion again");
+        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) throw conflict("DELETE_CONFLICT", "Deletion ID is already used");
+        // 在移动前刷新回收起点，避免旧目录的修改时间导致它被立即清理。
+        Files.setLastModifiedTime(source, java.nio.file.attribute.FileTime.from(clock.instant()));
+        try {
+            publisher.publish(source, target);
+            SnapshotFiles.forceDirectory(root);
+        } catch (IOException | RuntimeException | Error failure) {
+            if (Files.notExists(source, LinkOption.NOFOLLOW_LINKS) && Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS)) {
+                worlds.remove(request.worldId());
+                names.remove(metadata.name());
+            } else if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) entry.unavailable = true;
+            throw failure;
+        }
+        worlds.remove(request.worldId());
+        names.remove(metadata.name());
+        tunnelInvalidated.accept(request.worldId());
+        return Files.getLastModifiedTime(target, LinkOption.NOFOLLOW_LINKS).toInstant();
+    }
+
+    private static boolean deletionDiffers(WorldMetadata metadata, Deletion request) {
+        return !metadata.worldId().equals(request.worldId()) || !metadata.name().equals(request.expectedName())
+            || metadata.state().epoch() != request.expectedEpoch()
+            || !Objects.equals(metadata.state().committedVersion(), request.expectedVersion());
+    }
+
     /** 创建、原子发布和内存更新在同一个同步边界中。 */
     public synchronized WorldSummary create(String name) throws IOException {
         ensureOpen();
@@ -226,6 +353,7 @@ public final class WorldStore implements AutoCloseable {
     public synchronized boolean canReuseLocal(String worldId, String username, String deviceId, long sourceEpoch, Long baseVersion)
         throws WorldAccessException {
         UserStore.validateUsername(username);
+        checkUserAccess(username);
         validateId(deviceId);
         return canReuseLocal(entry(worldId), username, deviceId, sourceEpoch, baseVersion);
     }
@@ -245,6 +373,7 @@ public final class WorldStore implements AutoCloseable {
     )
         throws IOException, WorldAccessException {
         UserStore.validateUsername(username);
+        checkUserAccess(username);
         validateId(deviceId);
         validateId(requestId);
         Entry entry = entry(worldId);
@@ -655,7 +784,11 @@ public final class WorldStore implements AutoCloseable {
         ensureOpen();
         if (worldId != null) {
             Entry entry = worlds.get(worldId);
-            if (entry == null || entry.unavailable) return null;
+            if (entry == null) {
+                if (Files.exists(root.resolve(worldId), LinkOption.NOFOLLOW_LINKS)) return null;
+                return retire(path); // 删除世界遗留的孤立传输目录也受临时保留策略管理。
+            }
+            if (entry.unavailable) return null;
             var state = entry.metadata.state();
             // 未上传工作副本仍属有效任期时，离线或超过 TTL 也不能破坏恢复能力。
             if (preserveOwned && state.owner() != null && (epoch == null || epoch == state.epoch())) return null;
@@ -682,6 +815,7 @@ public final class WorldStore implements AutoCloseable {
     ) throws IOException, WorldAccessException {
         Long completed = committedResult(worldId, identity, uploadId, hash, baseVersion);
         if (completed != null) return completed;
+        if (Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException("Snapshot publication interrupted");
         Entry entry = owned(worldId, identity);
         var state = entry.metadata.state();
         checkBase(state, baseVersion);
@@ -717,6 +851,7 @@ public final class WorldStore implements AutoCloseable {
     }
 
     private Entry owned(String worldId, Identity identity) throws WorldAccessException {
+        checkUserAccess(identity.username());
         Objects.requireNonNull(identity);
         Entry entry = entry(worldId);
         var state = entry.metadata.state();
@@ -746,6 +881,7 @@ public final class WorldStore implements AutoCloseable {
         online(entry, now); // 超时后旧端点不能靠心跳恢复。
         entry.seen = true;
         entry.lastSeen = now;
+        entry.lastContactAt = clock.instant();
     }
 
     private boolean online(Entry entry, long now) {

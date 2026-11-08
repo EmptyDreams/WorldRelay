@@ -15,6 +15,14 @@ java {
 
 sourceSets.main.java.srcDir('../shared/src/main/java')
 
+def serverVersion = version.toString()
+tasks.named('processResources').configure {
+    inputs.property('serverVersion', serverVersion)
+    filesMatching('worldrelay-server.properties') {
+        expand(serverVersion: serverVersion)
+    }
+}
+
 application {
     applicationName = 'worldrelay-server'
     mainClass = 'top.kmar.worldrelay.server.WorldRelayServer'

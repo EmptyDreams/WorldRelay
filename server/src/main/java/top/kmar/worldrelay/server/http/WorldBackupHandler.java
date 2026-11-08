@@ -81,7 +81,7 @@ public final class WorldBackupHandler implements HttpHandler {
                     throw new WorldAccessException(400, "RESTORE_CONFIRMATION_REQUIRED", "Review the preview and explicitly confirm the restore");
                 var request = new WorldBackups.Restore(world, restoreId, backupVersion, expectedVersion, expectedEpoch, hash);
                 backups.authorize(request);
-                response = jobs.poll("restore:" + request, () -> backups.restore(request).toJson());
+                response = jobs.poll("restore:" + request, world, null, "RESTORE", () -> backups.restore(request).toJson());
             }
             HttpResponses.bytes(exchange, response == null ? 202 : 200, "application/json; charset=utf-8",
                 (response == null ? "{\"pending\":true}" : response).getBytes(StandardCharsets.UTF_8));

@@ -51,12 +51,25 @@ public final class WorldRelayService implements AutoCloseable {
         try {
             users = userStoreFactory.open(config.usersFile(), config.ssh());
             worlds = WorldStore.open(config.worldsDirectory(), config.heartbeatIntervalSeconds(), config.heartbeatTimeoutSeconds());
+            worlds.configureUsers(users::isEnabled);
             retention = new WorldRetention(worlds, config.ssh().transferDirectory(), config.retention());
             transferJobs = new TransferJobs();
+            tunnels = new TunnelGateway(worlds, config.tunnel());
             var backups = new WorldBackups(worlds, retention);
             HttpRouter registrationRouter = new HttpRouter();
             registrationRouter.register("POST", "/api/v1/register", new RegistrationHandler(users));
             registrationRouter.register("POST", "/api/v1/worlds", new WorldCreateHandler(worlds));
+            for (var action : WorldManagementHandler.Action.values()) {
+                registrationRouter.register(action == WorldManagementHandler.Action.LIST ? "GET" : "POST",
+                    "/api/v1/worlds" + (action == WorldManagementHandler.Action.LIST ? "" : "/" + action.name().toLowerCase(java.util.Locale.ROOT).replace('_', '-')),
+                    new WorldManagementHandler(worlds, retention, users, transferJobs, config.retention().temporaryHours(), action));
+            }
+            for (var action : UserManagementHandler.Action.values()) {
+                registrationRouter.register(action == UserManagementHandler.Action.LIST ? "GET" : "POST",
+                    "/api/v1/users" + (action == UserManagementHandler.Action.LIST ? "" : "/" + action.name().toLowerCase(java.util.Locale.ROOT)),
+                    new UserManagementHandler(users, worlds, tunnels, transferJobs, action));
+            }
+            registrationRouter.register("GET", "/api/v1/status", new ServerStatusHandler(config, users, worlds, tunnels, transferJobs));
             for (var action : WorldBackupHandler.Action.values()) {
                 registrationRouter.register("POST", "/api/v1/worlds/" + action.name().toLowerCase(java.util.Locale.ROOT).replace('_', '-'),
                     new WorldBackupHandler(backups, action, transferJobs));
@@ -69,7 +82,6 @@ public final class WorldRelayService implements AutoCloseable {
                 config.maxConcurrentRequests(), config.shutdownGraceSeconds(), registrationRouter, LocalRegistrationHandler::new);
             // 先占用注册端口，避免业务端口为 0 时恰好选中配置的注册端口。
             registration.start();
-            tunnels = new TunnelGateway(worlds, config.tunnel());
             tunnels.start();
             HttpRouter apiRouter = WorldRelayServer.createRouter(worlds, tunnels);
             apiRouter.register("POST", "/api/v1/worlds/tunnel-ticket", new TunnelTicketHandler(tunnels));

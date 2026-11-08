@@ -257,6 +257,45 @@ class TunnelGatewayTest {
         }
     }
 
+    /** 禁用访客会关闭其连接并撤销票据；禁用房主撤下入口但保留任期，启用后可重新登记。 */
+    @ParameterizedTest
+    @EnumSource(TunnelConfig.Mode.class)
+    void revokesDisabledUsersWithoutReleasingWorldOwnership(TunnelConfig.Mode mode) throws Exception {
+        try (var fixture = new Fixture(mode); var echo = new Echo(0)) {
+            Set<String> disabled = ConcurrentHashMap.newKeySet();
+            fixture.worlds.configureUsers(username -> !disabled.contains(username));
+            var world = fixture.world();
+            fixture.host(world, echo.port());
+            var unused = fixture.gateway.join(world.id, "Guest", false);
+            try (Socket guest = fixture.guest(world)) {
+                guest.getOutputStream().write(new byte[]{7, 8, 9});
+                assertArrayEquals(new byte[]{7, 8, 9}, guest.getInputStream().readNBytes(3));
+                disabled.add("Guest");
+                fixture.gateway.revokeUser("Guest");
+                assertEquals(-1, guest.getInputStream().read());
+                assertEquals("RUNNING", fixture.worlds.list().getFirst().status());
+                assertEquals("USER_DISABLED", assertThrows(WorldAccessException.class, () -> fixture.gateway.join(world.id, "Guest", false)).code());
+            }
+            disabled.remove("Guest");
+            assertThrows(ExecutionException.class, () -> fixture.connector().connect(fixture.endpoint(unused), unused.token(), null).get(10, TimeUnit.SECONDS));
+            try (Socket guest = fixture.guest(world)) {
+                guest.getOutputStream().write(42);
+                assertEquals(42, guest.getInputStream().read());
+            }
+            var oldHost = fixture.gateway.host(world.id, world.owner);
+            disabled.add("Host");
+            fixture.gateway.revokeUser("Host");
+            assertEquals("RECOVERY_REQUIRED", fixture.worlds.list().getFirst().status());
+            assertEquals("WORLD_OWNED", assertThrows(WorldAccessException.class,
+                () -> fixture.worlds.acquire(world.id, "Next", UUID.randomUUID().toString(), UUID.randomUUID().toString())).code());
+            disabled.remove("Host");
+            assertEquals(world.owner.epoch(), fixture.worlds.heartbeat(world.id, world.owner, null).epoch());
+            assertThrows(ExecutionException.class, () -> fixture.connector().connect(fixture.endpoint(oldHost), oldHost.token(), ignored -> {}).get(10, TimeUnit.SECONDS));
+            fixture.host(world, echo.port());
+            assertEquals("RUNNING", fixture.worlds.list().getFirst().status());
+        }
+    }
+
     /** 隧道失联与停服均撤下入口但保留持有者，原房主可以在同一任期重新登记。 */
     @ParameterizedTest
     @EnumSource(TunnelConfig.Mode.class)
