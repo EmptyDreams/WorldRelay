@@ -1,0 +1,127 @@
+name: Server Native
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'server-v*'
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      ARTIFACT_NAME: worldrelay-server-linux-${{ matrix.arch }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Build and test server JAR
+        run: bash ./gradlew :server:build --no-daemon --console=plain
+
+      - name: Setup GraalVM 25
+        uses: graalvm/setup-graalvm@v1
+        with:
+          distribution: graalvm
+          version: '25.0'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install native toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y build-essential zlib1g-dev
+
+      - name: Compile Native Image
+        run: |
+          mkdir -p server/build/native
+          native-image --no-fallback -march=compatibility -J-Xmx5g \
+            -jar server/build/libs/server-0.1.0-SNAPSHOT.jar \
+            -o server/build/native/worldrelay-server
+
+      - name: Smoke test native server
+        run: python3 .github/scripts/smoke-server.py --work-dir server/build/native/smoke -- server/build/native/worldrelay-server
+
+      - name: Package executable
+        run: |
+          cp server/README.md server/build/native/README.md
+          tar -C server/build/native -czf "server/build/$ARTIFACT_NAME.tar.gz" worldrelay-server README.md
+          cd server/build
+          sha256sum "$ARTIFACT_NAME.tar.gz" > "$ARTIFACT_NAME.tar.gz.sha256"
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: |
+            server/build/${{ env.ARTIFACT_NAME }}.tar.gz
+            server/build/${{ env.ARTIFACT_NAME }}.tar.gz.sha256
+          if-no-files-found: error
+
+      - name: Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: server-native-diagnostics-linux-${{ matrix.arch }}
+          path: |
+            server/build/reports/tests/test/
+            server/build/native/smoke/*.log
+          if-no-files-found: ignore
+
+  release:
+    name: Publish server release
+    needs: linux
+    if: startsWith(github.ref, 'refs/tags/server-v')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - name: Download both architectures
+        uses: actions/download-artifact@v8
+        with:
+          pattern: worldrelay-server-linux-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Verify and publish release assets
+        working-directory: release-assets
+        run: |
+          for arch in x64 arm64; do
+            test -f "worldrelay-server-linux-$arch.tar.gz"
+            sha256sum -c "worldrelay-server-linux-$arch.tar.gz.sha256"
+          done
+          version="${RELEASE_TAG#server-v}"
+          options=()
+          if [[ "$version" == *-* ]]; then
+            options+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" \
+            worldrelay-server-linux-x64.tar.gz \
+            worldrelay-server-linux-x64.tar.gz.sha256 \
+            worldrelay-server-linux-arm64.tar.gz \
+            worldrelay-server-linux-arm64.tar.gz.sha256 \
+            --verify-tag --title "WorldRelay Server $version" --generate-notes \
+            "${options[@]}"
