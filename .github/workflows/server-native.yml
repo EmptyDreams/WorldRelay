@@ -56,7 +56,7 @@ jobs:
       - name: Compile instrumented Native Image
         run: |
           mkdir -p server/build/native
-          native-image --no-fallback -march=compatibility -J-Xmx5g --pgo-instrument \
+          native-image --no-fallback -march=compatibility -J-Xmx5g -R:MaxHeapSize=512m --pgo-instrument \
             -jar server/build/libs/server-0.1.0-SNAPSHOT.jar \
             -o server/build/native/worldrelay-server-instrumented
 
@@ -70,7 +70,7 @@ jobs:
           for profile in 1-wss 2-tcp 3-tcp; do
             test -s "server/build/native/pgo/profiles/$profile.iprof"
           done
-          native-image --no-fallback -march=compatibility -J-Xmx5g \
+          native-image --no-fallback -march=compatibility -J-Xmx5g -R:MaxHeapSize=512m \
             --pgo=server/build/native/pgo/profiles/1-wss.iprof,server/build/native/pgo/profiles/2-tcp.iprof,server/build/native/pgo/profiles/3-tcp.iprof \
             -jar server/build/libs/server-0.1.0-SNAPSHOT.jar \
             -o server/build/native/worldrelay-server
