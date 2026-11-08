@@ -21,14 +21,14 @@ jobs:
           - arch: arm64
             runner: ubuntu-22.04-arm
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       ARTIFACT_NAME: worldrelay-server-linux-${{ matrix.arch }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Test smoke script shutdown handling
+      - name: Test training process and profile handling
         run: python3 -B -m unittest discover -s .github/scripts -p 'test_*.py'
 
       - name: Setup JDK 21
@@ -53,15 +53,42 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y build-essential zlib1g-dev
 
-      - name: Compile Native Image
+      - name: Compile instrumented Native Image
         run: |
           mkdir -p server/build/native
+          native-image --no-fallback -march=compatibility -J-Xmx5g --pgo-instrument \
+            -jar server/build/libs/server-0.1.0-SNAPSHOT.jar \
+            -o server/build/native/worldrelay-server-instrumented
+
+      - name: Run fixed PGO training workload
+        run: |
+          python3 -B .github/scripts/train-server.py --collect-profiles \
+            --work-dir server/build/native/pgo -- server/build/native/worldrelay-server-instrumented
+
+      - name: Compile PGO optimized Native Image
+        run: |
+          for profile in 1-wss 2-tcp 3-tcp; do
+            test -s "server/build/native/pgo/profiles/$profile.iprof"
+          done
           native-image --no-fallback -march=compatibility -J-Xmx5g \
+            --pgo=server/build/native/pgo/profiles/1-wss.iprof,server/build/native/pgo/profiles/2-tcp.iprof,server/build/native/pgo/profiles/3-tcp.iprof \
             -jar server/build/libs/server-0.1.0-SNAPSHOT.jar \
             -o server/build/native/worldrelay-server
 
-      - name: Smoke test native server
-        run: python3 .github/scripts/smoke-server.py --work-dir server/build/native/smoke -- server/build/native/worldrelay-server
+      - name: Verify PGO optimized server with fixed workload
+        run: |
+          python3 -B .github/scripts/train-server.py \
+            --work-dir server/build/native/verify -- server/build/native/worldrelay-server
+
+      - name: Upload PGO profiles and workload reports
+        uses: actions/upload-artifact@v7
+        with:
+          name: server-pgo-linux-${{ matrix.arch }}
+          path: |
+            server/build/native/pgo/profiles/*.iprof
+            server/build/native/pgo/summary.json
+            server/build/native/verify/summary.json
+          if-no-files-found: error
 
       - name: Package executable
         run: |
@@ -86,7 +113,11 @@ jobs:
           name: server-native-diagnostics-linux-${{ matrix.arch }}
           path: |
             server/build/reports/tests/test/
-            server/build/native/smoke/*.log
+            server/build/native/pgo/*.log
+            server/build/native/pgo/profiles/*.iprof
+            server/build/native/pgo/summary.json
+            server/build/native/verify/*.log
+            server/build/native/verify/summary.json
           if-no-files-found: ignore
 
   release:

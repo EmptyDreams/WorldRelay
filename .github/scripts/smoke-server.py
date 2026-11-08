@@ -13,6 +13,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -70,19 +71,22 @@ def stop_server(process, log):
         raise RuntimeError(f"Server exited with {process.returncode}; see {log}")
 
 
-def run(command, directory, mode, attempt, authorization, world_id):
+@contextmanager
+def running_server(command, directory, mode, attempt, *, properties=None, profile=None):
     config = directory / "server.properties"
     config.write_text(
         "http.bind-address=127.0.0.1\nhttp.port=0\nregistration.port=0\n"
         "http.shutdown-grace-seconds=0\nauth.users-file=data/users.json\n"
         "worlds.directory=data/worlds\n"
         f"tunnel.mode={mode}\ntunnel.bind-address=127.0.0.1\ntunnel.port=0\n"
-        "tunnel.public-host=127.0.0.1\ntunnel.public-port=2002\n",
+        "tunnel.public-host=127.0.0.1\ntunnel.public-port=2002\n"
+        + "".join(f"{key}={value}\n" for key, value in (properties or {}).items()),
         encoding="utf-8",
     )
     log = directory / f"{attempt}-{mode}.log"
     with log.open("wb") as output:
-        process = subprocess.Popen(command + ["--config", str(config)], cwd=directory,
+        runtime_options = [] if profile is None else [f"-XX:ProfilesDumpFile={profile}"]
+        process = subprocess.Popen(command + runtime_options + ["--config", str(config)], cwd=directory,
                                    stdout=output, stderr=subprocess.STDOUT)
         try:
             deadline = time.monotonic() + 45
@@ -95,28 +99,35 @@ def run(command, directory, mode, attempt, authorization, world_id):
                     raise RuntimeError(f"Server did not start; see {log}")
                 time.sleep(0.1)
             api, admin, tunnel = map(int, ports)
-            request(api, "/api/v1/worlds", expected=401)
-            if authorization is None:
-                user = request(admin, "/api/v1/register", body={"username": "NativeSmoke"}, expected=201)
-                authorization = "Basic " + base64.b64encode(f"NativeSmoke:{user['token']}".encode()).decode()
-                world = request(admin, "/api/v1/worlds", body={"name": "Native smoke 世界"}, expected=201)
-                world_id = world["worldId"]
-            worlds = request(api, "/api/v1/worlds", authorization=authorization)
-            if not any(world["worldId"] == world_id for world in worlds["worlds"]):
-                raise RuntimeError("World or credentials did not survive restart")
-            if mode == "wss":
-                websocket(tunnel)
-                certificate = None
-            else:
-                # 仅验证本次启动自行生成的证书；生产客户端仍按 API 返回的指纹校验。
-                context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-                context.check_hostname = False
-                context.verify_mode = ssl.CERT_NONE
-                with socket.create_connection(("127.0.0.1", tunnel), timeout=5) as connection:
-                    with context.wrap_socket(connection, server_hostname="localhost") as secure:
-                        certificate = secure.getpeercert(binary_form=True)
+            yield api, admin, tunnel
         finally:
             stop_server(process, log)
+    if profile is not None and (not profile.is_file() or profile.stat().st_size == 0):
+        raise RuntimeError(f"PGO profile was not written; see {log}")
+
+
+def run(command, directory, mode, attempt, authorization, world_id):
+    with running_server(command, directory, mode, attempt) as (api, admin, tunnel):
+        request(api, "/api/v1/worlds", expected=401)
+        if authorization is None:
+            user = request(admin, "/api/v1/register", body={"username": "NativeSmoke"}, expected=201)
+            authorization = "Basic " + base64.b64encode(f"NativeSmoke:{user['token']}".encode()).decode()
+            world = request(admin, "/api/v1/worlds", body={"name": "Native smoke 世界"}, expected=201)
+            world_id = world["worldId"]
+        worlds = request(api, "/api/v1/worlds", authorization=authorization)
+        if not any(world["worldId"] == world_id for world in worlds["worlds"]):
+            raise RuntimeError("World or credentials did not survive restart")
+        if mode == "wss":
+            websocket(tunnel)
+            certificate = None
+        else:
+            # 仅验证本次启动自行生成的证书；生产客户端仍按 API 返回的指纹校验。
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            with socket.create_connection(("127.0.0.1", tunnel), timeout=5) as connection:
+                with context.wrap_socket(connection, server_hostname="localhost") as secure:
+                    certificate = secure.getpeercert(binary_form=True)
     print(f"{mode} startup {attempt}: HTTP, authentication, storage, tunnel and shutdown passed", flush=True)
     return authorization, world_id, certificate
 
