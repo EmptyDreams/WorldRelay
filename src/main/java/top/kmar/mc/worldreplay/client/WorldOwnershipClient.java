@@ -70,7 +70,7 @@ final class WorldOwnershipClient {
     ) throws IOException {
         JsonObject body = identity(session);
         if (stage != null) body.addProperty("stage", stage);
-        if ("SAVE_SYNCED".equals(stage) || "UPLOAD_COMPLETE".equals(stage)) addBase(body, session.baseVersion());
+        if ("SAVE_SYNCED".equals(stage) || "RESUME".equals(stage) || "UPLOAD_COMPLETE".equals(stage)) addBase(body, session.baseVersion());
         String response = post(settings, user, action, body, false);
         View view = parse(response);
         view.checkSession(session);

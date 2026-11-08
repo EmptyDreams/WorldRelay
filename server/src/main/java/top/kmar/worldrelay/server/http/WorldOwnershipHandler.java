@@ -129,7 +129,7 @@ public final class WorldOwnershipHandler implements HttpHandler {
         if (action == Action.READY) {
             required.add("stage");
             WorldStore.ReadyStage ready = WorldStore.ReadyStage.valueOf(Objects.requireNonNullElse(stage, ""));
-            if (ready == WorldStore.ReadyStage.SAVE_SYNCED) required.add("baseVersion");
+            if (ready != WorldStore.ReadyStage.PORT_OPENED) required.add("baseVersion");
             else {
                 required.add("tunnelId");
                 WorldStore.validateId(tunnel);

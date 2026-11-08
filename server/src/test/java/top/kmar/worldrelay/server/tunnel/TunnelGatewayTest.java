@@ -308,6 +308,31 @@ class TunnelGatewayTest {
         }
     }
 
+    /** 同任期恢复会撤下旧登记和待用票据；新监听重新登记后，两种隧道都能恢复访客连接。 */
+    @ParameterizedTest
+    @EnumSource(TunnelConfig.Mode.class)
+    void resumptionRequiresFreshHostRegistration(TunnelConfig.Mode mode) throws Exception {
+        try (var fixture = new Fixture(mode); var echo = new Echo(0)) {
+            var world = fixture.world();
+            var previous = fixture.host(world, echo.port());
+            var join = fixture.gateway.join(world.id, "Guest", false);
+            var host = fixture.gateway.host(world.id, world.owner);
+            var resumed = fixture.worlds.ready(world.id, world.owner, WorldStore.ReadyStage.RESUME, null, null);
+            assertEquals(world.owner.epoch(), resumed.epoch());
+            assertNull(resumed.endpoint());
+            assertThrows(WorldAccessException.class, () -> fixture.gateway.ready(world.id, world.owner, previous.registrationId()));
+            var connector = fixture.connector();
+            assertThrows(ExecutionException.class, () -> connector.connect(fixture.endpoint(join), join.token(), null).get(10, TimeUnit.SECONDS));
+            assertThrows(ExecutionException.class, () -> connector.connect(fixture.endpoint(host), host.token(), ignored -> {}).get(10, TimeUnit.SECONDS));
+            assertThrows(WorldAccessException.class, () -> fixture.gateway.join(world.id, "Guest", false));
+            fixture.host(world, echo.port());
+            try (Socket guest = fixture.guest(world)) {
+                guest.getOutputStream().write(42);
+                assertEquals(42, guest.getInputStream().read());
+            }
+        }
+    }
+
     /** TCP 可以通过域名连接并验证 API 指纹；错误指纹拒绝握手，重启继续使用同一证书。 */
     @Test
     void verifiesPinnedCertificateAndPersistsIdentity() throws Exception {

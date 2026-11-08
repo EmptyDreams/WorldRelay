@@ -72,13 +72,17 @@ public final class SharedWorldCreation {
                 var settings = ClientConnectionSettings.load(game.resolve("config/worldrelay-client.json"));
                 var current = SharedWorldListClient.fetch(settings, user).stream().filter(world -> world.worldId().equals(worldId)).findFirst()
                     .orElseThrow(() -> new IOException("World is unavailable"));
-                if (current.status().equals("RUNNING")) {
+                if (current.status().equals("RUNNING") && !user.equals(current.hostName())) {
                     joinGuest(parent, settings, user, worldId, worldName);
                     return;
                 }
                 LocalWorldSessionStore.lockGame(game);
                 var store = new LocalWorldSessionStore(game, settings.serverUri().toString(), user, profile, worldId);
                 var session = store.read();
+                if (current.status().equals("RUNNING") && (session == null || !session.canResume())) {
+                    joinGuest(parent, settings, user, worldId, worldName);
+                    return;
+                }
                 if (session == null || session.stage() == LocalWorldSession.Stage.CANCELLED || session.stage() == LocalWorldSession.Stage.COMMITTED) {
                     if (!current.status().equals("FREE")) {
                         client.execute(() -> {
@@ -101,6 +105,37 @@ public final class SharedWorldCreation {
                         joining = false;
                         creation.uploadStopped();
                     });
+                    return;
+                }
+                if (session.canResume()) {
+                    client.execute(() -> show(parent, "recovering", true, null));
+                    try {
+                        var prepared = SharedWorldRecovery.prepare(settings, user, session, store);
+                        var creation = new Creation(parent, user, profile, settings, store, session);
+                        creation.worldDirectory = prepared.directory();
+                        creation.storage = LevelStorageSource.createDefault(store.saves(session.epoch()));
+                        creation.save(session.with(LocalWorldSession.Stage.STARTED, session.folder()));
+                        if (active != null) {
+                            active.stopHeartbeat();
+                            active.saveMonitor.detach();
+                            if (active.tunnelHost != null) active.tunnelHost.close();
+                        }
+                        active = creation;
+                        creation.startHeartbeat(prepared.heartbeatIntervalSeconds());
+                        client.execute(() -> {
+                            joining = false;
+                            creation.openExisting();
+                        });
+                    } catch (Exception failure) {
+                        WorldRelay.LOGGER.warn("Shared world recovery did not complete; local files are retained", failure);
+                        client.execute(() -> {
+                            joining = false;
+                            String message = failure instanceof WorldOwnershipClient.RequestException rejected
+                                && java.util.Set.of("STALE_EPOCH", "OWNER_MISMATCH", "SESSION_MISMATCH", "WORLD_NOT_OWNED").contains(rejected.code())
+                                ? "ownership_lost" : "recovery_failed";
+                            show(parent, message, false, () -> join(parent, worldId, worldName));
+                        });
+                    }
                     return;
                 }
                 if (session.stage() != LocalWorldSession.Stage.ACQUIRING && session.stage() != LocalWorldSession.Stage.PREPARING
@@ -304,9 +339,7 @@ public final class SharedWorldCreation {
                     save(session.with(LocalWorldSession.Stage.STARTED, session.folder()));
                     Minecraft.getInstance().execute(() -> {
                         busy = false;
-                        monitorSaves();
-                        new WorldOpenFlows(Minecraft.getInstance(), storage).openWorld(session.folder(),
-                            () -> show(parent, "unfinished", false, null));
+                        openExisting();
                     });
                 } catch (Exception failure) {
                     WorldRelay.LOGGER.warn("Shared world download or start failed; ownership and local files are retained");
@@ -317,6 +350,12 @@ public final class SharedWorldCreation {
                     });
                 }
             });
+        }
+
+        private void openExisting() {
+            monitorSaves();
+            new WorldOpenFlows(Minecraft.getInstance(), storage).openWorld(session.folder(),
+                () -> show(parent, "recovery_failed", false, null));
         }
 
         private void uploadStopped() {

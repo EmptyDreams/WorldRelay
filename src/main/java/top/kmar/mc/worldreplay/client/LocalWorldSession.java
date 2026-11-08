@@ -50,6 +50,10 @@ record LocalWorldSession(String worldId, String deviceId, String requestId, Stri
         return baseVersion == null && stage == Stage.PREPARING;
     }
 
+    boolean canResume() {
+        return stage == Stage.START_REQUESTED || stage == Stage.STARTED || stage == Stage.STOPPING;
+    }
+
     boolean canCancel() {
         return baseVersion == null && (stage == Stage.PREPARING || stage == Stage.CANCELLING);
     }

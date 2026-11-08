@@ -70,7 +70,7 @@ public final class WorldStore implements AutoCloseable {
     private final Set<String> names = new HashSet<>();
     private boolean closed;
 
-    public enum ReadyStage {SAVE_SYNCED, PORT_OPENED}
+    public enum ReadyStage {SAVE_SYNCED, RESUME, PORT_OPENED}
 
     public enum StopStage {BEGIN, UPLOAD_COMPLETE}
 
@@ -338,6 +338,18 @@ public final class WorldStore implements AutoCloseable {
         Objects.requireNonNull(stage);
         Entry entry = owned(worldId, identity);
         var state = entry.metadata.state();
+        if (stage == ReadyStage.RESUME) {
+            if (endpoint != null) throw new IllegalArgumentException("Unexpected endpoint");
+            checkBase(state, baseVersion);
+            // 已进入上传阶段的世界只允许重试提交，不能重开可写副本。
+            if (state.phase() == WorldPhase.COMMITTING) throw conflict("INVALID_PHASE", "World is already committing");
+            if (state.phase() != WorldPhase.STARTING) persist(entry, state.transition(WorldPhase.STARTING, null));
+            tunnelInvalidated.accept(worldId);
+            entry.joinReady = false;
+            entry.players = null;
+            touch(entry);
+            return view(entry);
+        }
         if (state.phase() == WorldPhase.STOPPING || state.phase() == WorldPhase.COMMITTING) {
             throw conflict("INVALID_PHASE", "World is already stopping");
         }

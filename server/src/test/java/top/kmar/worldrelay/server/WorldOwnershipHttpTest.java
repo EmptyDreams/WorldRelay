@@ -174,6 +174,40 @@ class WorldOwnershipHttpTest {
         }
     }
 
+    /** 原房主重启后可显式恢复停止中的空世界；请求仍须提供基础版本、通过鉴权且不能中断正在提交的快照。 */
+    @Test
+    void resumesInterruptedOwnerWithExplicitBaseVersion() throws Exception {
+        String identity;
+        String session;
+        try (var client = HttpClient.newHttpClient(); var service = new WorldRelayService(config())) {
+            service.start();
+            var acquired = send(client, post(service, "acquire", acquireFields(world, device, request), auth));
+            session = field(acquired.body(), "sessionId");
+            identity = identity(world, device, session);
+            error(send(client, post(service, "ready", identity + ",\"stage\":\"RESUME\"", auth)),
+                400, "INVALID_OWNERSHIP_REQUEST");
+            error(send(client, post(service, "ready", identity + ",\"stage\":\"RESUME\",\"baseVersion\":1", auth)),
+                409, "BASE_VERSION_MISMATCH");
+            error(send(client, post(service, "ready", identity + ",\"stage\":\"RESUME\",\"baseVersion\":null", guestAuth)),
+                403, "OWNER_MISMATCH");
+            assertEquals(200, send(client, post(service, "stop", identity + ",\"stage\":\"BEGIN\"", auth)).statusCode());
+        }
+        try (var client = HttpClient.newHttpClient(); var service = new WorldRelayService(config())) {
+            service.start();
+            var resumed = send(client, post(service, "ready", identity + ",\"stage\":\"RESUME\",\"baseVersion\":null", auth));
+            assertEquals(200, resumed.statusCode(), resumed.body());
+            assertEquals("STARTING", field(resumed.body(), "phase"));
+            assertEquals(session, field(resumed.body(), "sessionId"));
+            assertTrue(resumed.body().contains("\"hasSave\":false"));
+            assertTrue(resumed.body().contains("\"epoch\":1"));
+            assertTrue(resumed.body().contains("\"endpoint\":null"));
+            assertEquals(200, send(client, post(service, "stop", identity + ",\"stage\":\"BEGIN\"", auth)).statusCode());
+            assertEquals(200, send(client, post(service, "stop", identity + ",\"stage\":\"UPLOAD_COMPLETE\",\"baseVersion\":null", auth)).statusCode());
+            error(send(client, post(service, "ready", identity + ",\"stage\":\"RESUME\",\"baseVersion\":null", auth)),
+                409, "INVALID_PHASE");
+        }
+    }
+
     /**
      * 并发发送不同用户／设备的获取请求，验证只有一个请求成功，其余均收到所有权冲突。
      * 再并发重试同一获取请求，验证仅一次创建会话，其余请求幂等成功且返回同一个 sessionId。
