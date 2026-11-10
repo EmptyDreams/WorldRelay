@@ -23,7 +23,7 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
         "http.bind-address", "http.port", "http.max-concurrent-requests", "http.shutdown-grace-seconds",
         "registration.port", "auth.users-file", "worlds.directory",
         "ownership.heartbeat-interval-seconds", "ownership.heartbeat-timeout-seconds",
-        "ssh.authorized-keys-file", "ssh.transfer-directory", "ssh.rrsync-command", "ssh.transfer-user", "ssh.host-public-key-file",
+        "ssh.transfer-directory", "ssh.rrsync-command", "ssh.transfer-user", "ssh.host-public-key-file",
         "ssh.public-host", "ssh.public-port", "tunnel.mode", "tunnel.bind-address", "tunnel.port",
         "tunnel.public-host", "tunnel.public-port", "tunnel.tls-directory",
         "retention.recent-versions", "retention.daily-backup-days", "retention.temporary-hours",
@@ -142,6 +142,7 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
         ServerConfig defaults = defaults();
         Path usersFile = Path.of(properties.getProperty("auth.users-file", defaults.usersFile().toString()));
         SshRegistrationConfig sshDefaults = SshRegistrationConfig.defaults(usersFile);
+        String transferUser = properties.getProperty("ssh.transfer-user", sshDefaults.transferUser());
         return new ServerConfig(
             properties.getProperty("http.bind-address", defaults.bindAddress()),
             integer(properties, "http.port", defaults.port()),
@@ -153,10 +154,10 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
             integer(properties, "ownership.heartbeat-interval-seconds", defaults.heartbeatIntervalSeconds()),
             integer(properties, "ownership.heartbeat-timeout-seconds", defaults.heartbeatTimeoutSeconds()),
             new SshRegistrationConfig(
-                Path.of(properties.getProperty("ssh.authorized-keys-file", sshDefaults.authorizedKeysFile().toString())),
+                SshRegistrationConfig.authorizedKeysFile(transferUser),
                 Path.of(properties.getProperty("ssh.transfer-directory", sshDefaults.transferDirectory().toString())),
                 properties.getProperty("ssh.rrsync-command", sshDefaults.rrsyncCommand()),
-                properties.getProperty("ssh.transfer-user", sshDefaults.transferUser()),
+                transferUser,
                 Path.of(properties.getProperty("ssh.host-public-key-file", sshDefaults.hostPublicKeyFile().toString())),
                 properties.getProperty("ssh.public-host", sshDefaults.publicHost()),
                 integer(properties, "ssh.public-port", sshDefaults.publicPort())),

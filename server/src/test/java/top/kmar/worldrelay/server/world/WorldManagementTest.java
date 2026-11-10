@@ -3,7 +3,6 @@ package top.kmar.worldrelay.server.world;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
-import top.kmar.worldrelay.server.auth.SshRegistrationConfig;
 import top.kmar.worldrelay.server.auth.TransferTestUsers;
 import top.kmar.worldrelay.snapshot.SnapshotFiles;
 import top.kmar.worldrelay.snapshot.SnapshotManifest;
@@ -173,7 +172,7 @@ class WorldManagementTest {
     void disabledUserCannotPublishAnAlreadyPreparedSnapshot() throws Exception {
         var data = BackupTestWorld.create(root.resolve("worlds"));
         Path usersFile = root.resolve("users.json");
-        try (var users = TransferTestUsers.open(usersFile, SshRegistrationConfig.defaults(usersFile)); var store = WorldStore.open(data.root())) {
+        try (var users = TransferTestUsers.open(usersFile, TransferTestUsers.config(usersFile)); var store = WorldStore.open(data.root())) {
             assertNotNull(users.register("Dev", false));
             store.configureUsers(users::isEnabled);
             var owner = BackupTestWorld.acquire(store, data.world());

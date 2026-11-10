@@ -1,11 +1,11 @@
 package top.kmar.worldrelay.server.world;
 
 import org.junit.jupiter.api.Test;
+import top.kmar.worldrelay.server.auth.TransferTestUsers;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import top.kmar.worldrelay.server.ServerConfig;
 import top.kmar.worldrelay.server.WorldRelayService;
-import top.kmar.worldrelay.server.auth.SshRegistrationConfig;
 import top.kmar.worldrelay.server.auth.UserStore;
 import top.kmar.worldrelay.server.tunnel.TunnelConfig;
 
@@ -31,7 +31,7 @@ class WorldBackupHttpTest {
     private ServerConfig config(BackupTestWorld data) {
         Path users = root.resolve("users.json");
         return new ServerConfig("127.0.0.1", 0, 32, 0, 0, users, data.root(), 10, 30,
-            SshRegistrationConfig.defaults(users), TunnelConfig.defaults(users, 0),
+            TransferTestUsers.config(users), TunnelConfig.defaults(users, 0),
             new RetentionConfig(5, 7, 24, 0, 60, ZoneOffset.UTC));
     }
 
@@ -59,7 +59,7 @@ class WorldBackupHttpTest {
         var data = BackupTestWorld.create(root.resolve("worlds"));
         var config = config(data);
         String auth;
-        try (var users = UserStore.open(config.usersFile())) {
+        try (var users = UserStore.open(config.usersFile(), config.ssh())) {
             var user = users.register("Dev", false);
             assertNotNull(user);
             auth = "Basic " + Base64.getEncoder().encodeToString(("Dev:" + user.token()).getBytes(StandardCharsets.UTF_8));

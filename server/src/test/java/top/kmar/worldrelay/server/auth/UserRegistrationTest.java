@@ -20,7 +20,7 @@ class UserRegistrationTest {
     void failedTokenResetKeepsOriginalAccountAndAllowsRetry() throws Exception {
         for (boolean afterMove : new boolean[]{false, true}) {
             Path file = directory.resolve(afterMove ? "after/users.json" : "before/users.json");
-            var ssh = SshRegistrationConfig.defaults(file);
+            var ssh = TransferTestUsers.config(file);
             AtomicBoolean fail = new AtomicBoolean();
             try (var users = UserStore.open(file, ssh, (temporary, target) -> {
                 if (fail.get() && !afterMove) throw new IOException("before publication");
@@ -49,7 +49,7 @@ class UserRegistrationTest {
     void interruptedTokenResetRecoversAccountBeforeServingRequests() throws Exception {
         for (boolean afterMove : new boolean[]{false, true}) {
             Path file = directory.resolve(afterMove ? "after/users.json" : "before/users.json");
-            var ssh = SshRegistrationConfig.defaults(file);
+            var ssh = TransferTestUsers.config(file);
             AtomicBoolean crash = new AtomicBoolean();
             UserStore.Registration original;
             byte[] before;
@@ -78,7 +78,7 @@ class UserRegistrationTest {
     @Test
     void recoveryRefusesUnrecognizedExternalUserChanges() throws Exception {
         Path file = directory.resolve("users.json");
-        var ssh = SshRegistrationConfig.defaults(file);
+        var ssh = TransferTestUsers.config(file);
         try (var users = UserStore.open(file, ssh, (temporary, target) -> {
             RegistrationFiles.atomicMove(temporary, target);
             throw new SimulatedCrash();
@@ -96,7 +96,7 @@ class UserRegistrationTest {
     @Test
     void recoveryRejectsCorruptedBackupWithoutChangingFiles() throws Exception {
         Path file = directory.resolve("users.json");
-        var ssh = SshRegistrationConfig.defaults(file);
+        var ssh = TransferTestUsers.config(file);
         try (var users = UserStore.open(file, ssh, (temporary, target) -> {
             RegistrationFiles.atomicMove(temporary, target);
             throw new SimulatedCrash();
@@ -115,7 +115,7 @@ class UserRegistrationTest {
     @Test
     void locksSharedAuthorizedKeysAcrossDifferentUserStores() throws Exception {
         Path firstFile = directory.resolve("first.json");
-        var ssh = SshRegistrationConfig.defaults(firstFile);
+        var ssh = TransferTestUsers.config(firstFile);
         Path secondFile = directory.resolve("second.json");
         try (@SuppressWarnings("unused") var first = UserStore.open(firstFile, ssh)) {
             assertOpenRejected(secondFile, ssh);

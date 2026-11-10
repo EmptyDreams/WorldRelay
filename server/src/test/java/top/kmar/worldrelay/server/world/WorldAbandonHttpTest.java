@@ -1,11 +1,11 @@
 package top.kmar.worldrelay.server.world;
 
 import org.junit.jupiter.api.Test;
+import top.kmar.worldrelay.server.auth.TransferTestUsers;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import top.kmar.worldrelay.server.ServerConfig;
 import top.kmar.worldrelay.server.WorldRelayService;
-import top.kmar.worldrelay.server.auth.SshRegistrationConfig;
 import top.kmar.worldrelay.server.auth.UserStore;
 import top.kmar.worldrelay.server.tunnel.TunnelConfig;
 
@@ -49,10 +49,10 @@ class WorldAbandonHttpTest {
         }
         Path usersFile = root.resolve("users.json");
         var config = new ServerConfig("127.0.0.1", 0, 32, 0, 0, usersFile, data.root(), 10, 30,
-            SshRegistrationConfig.defaults(usersFile), TunnelConfig.defaults(usersFile, 0),
+            TransferTestUsers.config(usersFile), TunnelConfig.defaults(usersFile, 0),
             new RetentionConfig(5, 7, 24, 0, 60, ZoneOffset.UTC));
         String auth;
-        try (var users = UserStore.open(usersFile)) {
+        try (var users = UserStore.open(usersFile, config.ssh())) {
             var registered = users.register("Dev", false);
             assertNotNull(registered);
             auth = "Basic " + Base64.getEncoder().encodeToString(("Dev:" + registered.token()).getBytes(StandardCharsets.UTF_8));

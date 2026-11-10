@@ -2,6 +2,7 @@ package top.kmar.worldrelay.server;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import top.kmar.worldrelay.server.auth.TransferTestUsers;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import top.kmar.worldrelay.server.auth.UserStore;
@@ -39,7 +40,8 @@ class WorldOwnershipHttpTest {
     }
 
     private ServerConfig config() {
-        return new ServerConfig("127.0.0.1", 0, 32, 0, 0, directory.resolve("users.json"), directory.resolve("worlds"), 5, 20);
+        return new ServerConfig("127.0.0.1", 0, 32, 0, 0, directory.resolve("users.json"), directory.resolve("worlds"),
+            5, 20, TransferTestUsers.config(directory.resolve("users.json")));
     }
 
     /**
@@ -48,7 +50,7 @@ class WorldOwnershipHttpTest {
      */
     @BeforeEach
     void prepare() throws Exception {
-        try (UserStore users = UserStore.open(config().usersFile())) {
+        try (UserStore users = UserStore.open(config().usersFile(), config().ssh())) {
             var host = users.register("房主", false);
             var guest = users.register("访客", false);
             assertNotNull(host, "测试前置条件：房主应注册成功");

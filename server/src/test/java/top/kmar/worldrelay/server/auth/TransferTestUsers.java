@@ -10,6 +10,12 @@ public final class TransferTestUsers {
     private TransferTestUsers() {
     }
 
+    /** 测试公钥和传输文件始终位于用例的临时目录，不访问运行测试者的 SSH 文件。 */
+    public static SshRegistrationConfig config(Path usersFile) {
+        Path parent = usersFile.toAbsolutePath().getParent();
+        return new SshRegistrationConfig(parent.resolve(".ssh/authorized_keys"), parent.resolve("transfers"), "/usr/bin/rrsync");
+    }
+
     public static UserStore open(Path path, SshRegistrationConfig ssh) throws IOException {
         return UserStore.open(path, ssh, RegistrationFiles::atomicMove, command -> true, OpenSshCapabilities.ExpiryTime.UNSUPPORTED);
     }

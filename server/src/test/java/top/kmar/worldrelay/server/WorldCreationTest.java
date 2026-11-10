@@ -1,6 +1,7 @@
 package top.kmar.worldrelay.server;
 
 import org.junit.jupiter.api.Test;
+import top.kmar.worldrelay.server.auth.TransferTestUsers;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import top.kmar.worldrelay.server.auth.UserStore;
@@ -29,7 +30,8 @@ class WorldCreationTest {
 
     private ServerConfig config() {
         return new ServerConfig("127.0.0.1", 0, 32, 0, 0,
-            directory.resolve("users.json"), directory.resolve("worlds"));
+            directory.resolve("users.json"), directory.resolve("worlds"),
+            10, 30, TransferTestUsers.config(directory.resolve("users.json")));
     }
 
     /**
@@ -138,7 +140,7 @@ class WorldCreationTest {
 
     /** 为世界列表回归测试创建非覆盖注册用户，只提取返回的 API 密钥构造 Basic 凭据。 */
     private String registerUser() throws Exception {
-        try (UserStore users = UserStore.open(config().usersFile())) {
+        try (UserStore users = UserStore.open(config().usersFile(), config().ssh())) {
             var registration = users.register("玩家", false);
             assertNotNull(registration, "测试前置条件：世界列表查询用户应注册成功");
             String key = registration.token();

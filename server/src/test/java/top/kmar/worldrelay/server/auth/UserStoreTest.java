@@ -23,7 +23,7 @@ class UserStoreTest {
     void persistsOnlyDigestsAndKeepsOriginalKeyOnDuplicateRegistration() throws Exception {
         Path file = directory.resolve("users.json");
         String key;
-        try (UserStore store = UserStore.open(file)) {
+        try (UserStore store = UserStore.open(file, TransferTestUsers.config(file))) {
             var registration = store.register("小明🌍", false);
             assertNotNull(registration, "测试前置条件：首次注册应成功");
             key = registration.token();
@@ -42,7 +42,7 @@ class UserStoreTest {
         String persisted = Files.readString(file);
         assertFalse(persisted.contains(key));
         assertTrue(persisted.contains("小明🌍"));
-        try (UserStore reopened = UserStore.open(file)) {
+        try (UserStore reopened = UserStore.open(file, TransferTestUsers.config(file))) {
             assertTrue(reopened.verify("小明🌍", key));
         }
     }
@@ -54,14 +54,14 @@ class UserStoreTest {
     @Test
     void fileLockPreventsConcurrentStoresAndIsReleasedOnClose() throws Exception {
         Path file = directory.resolve("users.json");
-        UserStore first = UserStore.open(file);
+        UserStore first = UserStore.open(file, TransferTestUsers.config(file));
         try (first) {
-            assertThrows(IOException.class, () -> UserStore.open(file));
-            assertThrows(IOException.class, () -> UserStore.open(directory.resolve("./users.json")));
+            assertThrows(IOException.class, () -> UserStore.open(file, TransferTestUsers.config(file)));
+            assertThrows(IOException.class, () -> UserStore.open(directory.resolve("./users.json"), TransferTestUsers.config(file)));
         }
         first.close();
         assertThrows(IllegalStateException.class, () -> first.register("closed", false));
-        try (UserStore reopened = UserStore.open(file)) {
+        try (UserStore reopened = UserStore.open(file, TransferTestUsers.config(file))) {
             assertNotNull(reopened.register("after-close", false));
         }
     }
@@ -73,7 +73,7 @@ class UserStoreTest {
     @Test
     void failedPublicationDoesNotAuthenticateUserAndCanBeRetried() throws Exception {
         Path file = directory.resolve("users.json");
-        try (UserStore store = UserStore.open(file)) {
+        try (UserStore store = UserStore.open(file, TransferTestUsers.config(file))) {
             Files.createDirectory(file);
             Files.writeString(file.resolve("blocker"), "prevent replacement");
             assertThrows(IOException.class, () -> store.register("retry", false));
@@ -99,16 +99,16 @@ class UserStoreTest {
             "{\"alice\":\"" + "0".repeat(64) + "\",\"alice\":\"" + "0".repeat(64) + "\"}",
             "{\"bad:name\":\"" + "0".repeat(64) + "\"}"}) {
             Files.writeString(file, json);
-            assertThrows(IOException.class, () -> UserStore.open(file));
+            assertThrows(IOException.class, () -> UserStore.open(file, TransferTestUsers.config(file)));
             assertEquals(json, Files.readString(file));
         }
         Files.writeString(file, "{}");
-        try (UserStore store = UserStore.open(file)) {
+        try (UserStore store = UserStore.open(file, TransferTestUsers.config(file))) {
             assertNotNull(store.register("ok", false));
         }
         Files.delete(file);
         Files.createDirectory(file);
-        assertThrows(IOException.class, () -> UserStore.open(file));
+        assertThrows(IOException.class, () -> UserStore.open(file, TransferTestUsers.config(file)));
     }
 
 }

@@ -1,6 +1,7 @@
 package top.kmar.worldrelay.server;
 
 import org.junit.jupiter.api.Test;
+import top.kmar.worldrelay.server.auth.TransferTestUsers;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import top.kmar.worldrelay.server.auth.UserStore;
@@ -35,7 +36,8 @@ class WorldRelayServiceTest {
     Path directory;
 
     private ServerConfig config() {
-        return new ServerConfig("127.0.0.1", 0, 32, 0, 0, directory.resolve("users.json"), directory.resolve("worlds"));
+        return new ServerConfig("127.0.0.1", 0, 32, 0, 0, directory.resolve("users.json"), directory.resolve("worlds"),
+            10, 30, TransferTestUsers.config(directory.resolve("users.json")));
     }
 
     /**
@@ -100,7 +102,7 @@ class WorldRelayServiceTest {
     @Test
     void pingRequiresAuthenticationAndReturnsNoContent() throws Exception {
         String key;
-        try (UserStore users = UserStore.open(config().usersFile())) {
+        try (UserStore users = UserStore.open(config().usersFile(), config().ssh())) {
             var registration = users.register("ping-player", false);
             assertNotNull(registration, "测试前置条件：ping 测试用户应注册成功");
             key = registration.token();
@@ -153,7 +155,7 @@ class WorldRelayServiceTest {
             assertEquals(1, statuses.stream().filter(status -> status == 201).count());
             assertEquals(11, statuses.stream().filter(status -> status == 409).count());
         }
-        try (UserStore users = UserStore.open(config().usersFile())) {
+        try (UserStore users = UserStore.open(config().usersFile(), config().ssh())) {
             assertNull(users.register("race", false));
         }
     }
@@ -171,7 +173,7 @@ class WorldRelayServiceTest {
         }
         try (ServerSocket occupiedApi = new ServerSocket(0, 0, loopback)) {
             ServerConfig config = new ServerConfig("127.0.0.1", occupiedApi.getLocalPort(), 32, 0,
-                registrationPort, directory.resolve("users.json"), config().worldsDirectory());
+                registrationPort, directory.resolve("users.json"), config().worldsDirectory(), 10, 30, config().ssh());
             try (WorldRelayService service = new WorldRelayService(config)) {
                 assertThrows(java.io.IOException.class, service::start);
                 assertThrows(IllegalStateException.class, service::apiAddress);
@@ -180,7 +182,7 @@ class WorldRelayServiceTest {
         }
         try (
             ServerSocket ignored = new ServerSocket(registrationPort, 0, loopback);
-            UserStore users = UserStore.open(config().usersFile());
+            UserStore users = UserStore.open(config().usersFile(), config().ssh());
             WorldStore worlds = WorldStore.open(config().worldsDirectory())
         ) {
             assertNotNull(users.register("after-failure", false));

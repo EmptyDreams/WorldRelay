@@ -1,6 +1,8 @@
 package top.kmar.worldrelay.server;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
@@ -63,31 +65,50 @@ class ServerConfigTest {
         assertThrows(IllegalArgumentException.class, () -> ServerConfig.load(file));
     }
 
-    /** 验证 SSH 路径及对外连接地址由部署配置指定，非法的必填配置被拒绝。 */
+    /** 验证公钥始终使用当前账户的 SSH 目录，传输目录、工具和公网地址可配置，必填值不能为空。 */
     @Test
     void loadsSshRegistrationPathsAndRejectsEmptyValues() throws Exception {
         Path file = directory.resolve("ssh.properties");
         Files.writeString(file, "auth.users-file=custom/users.json\n");
         var defaults = ServerConfig.load(file).ssh();
-        assertEquals(Path.of("custom/ssh/authorized_keys"), defaults.authorizedKeysFile());
+        Path keys = Path.of(System.getProperty("user.home"), ".ssh", "authorized_keys");
+        assertEquals(keys, defaults.authorizedKeysFile());
         assertEquals(Path.of("custom/transfers"), defaults.transferDirectory());
         Files.writeString(file, """
-            ssh.authorized-keys-file=keys/authorized_keys
             ssh.transfer-directory=staging/users
             ssh.rrsync-command=/usr/local/bin/rrsync
             ssh.public-host=[2001:db8::1]
             ssh.public-port=2222
             """);
         var ssh = ServerConfig.load(file).ssh();
-        assertEquals(Path.of("keys/authorized_keys"), ssh.authorizedKeysFile());
+        assertEquals(keys, ssh.authorizedKeysFile());
         assertEquals(Path.of("staging/users"), ssh.transferDirectory());
         assertEquals("/usr/local/bin/rrsync", ssh.rrsyncCommand());
         assertEquals("2001:db8::1", ssh.publicHost());
         assertEquals(2222, ssh.publicPort());
-        for (String key : new String[]{"ssh.authorized-keys-file", "ssh.transfer-directory", "ssh.rrsync-command", "ssh.public-host"}) {
+        for (String key : new String[]{"ssh.transfer-directory", "ssh.rrsync-command", "ssh.public-host", "ssh.transfer-user"}) {
             Files.writeString(file, key + "=\n");
             assertThrows(IllegalArgumentException.class, () -> ServerConfig.load(file));
         }
+    }
+
+    /** 验证指定其他 Linux 传输账户时，公钥使用该账户的真实主目录，而非服务进程的主目录。 */
+    @Test
+    @EnabledOnOs(OS.LINUX)
+    void resolvesAuthorizedKeysInConfiguredTransferAccountHome() throws Exception {
+        String[] account;
+        try (var lines = Files.lines(Path.of("/etc/passwd"))) {
+            account = lines.map(line -> line.split(":", -1))
+                .filter(fields -> fields.length == 7 && !fields[0].equals(System.getProperty("user.name")))
+                .filter(fields -> !fields[5].isBlank() && Path.of(fields[5]).isAbsolute()
+                    && !Path.of(fields[5]).equals(Path.of(System.getProperty("user.home"))))
+                .findFirst().orElseThrow();
+        }
+        Path file = directory.resolve("transfer-account.properties");
+        Files.writeString(file, "ssh.transfer-user=" + account[0] + "\n");
+        var ssh = ServerConfig.load(file).ssh();
+        assertEquals(account[0], ssh.transferUser());
+        assertEquals(Path.of(account[5], ".ssh", "authorized_keys"), ssh.authorizedKeysFile());
     }
 
     /**
