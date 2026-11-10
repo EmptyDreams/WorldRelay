@@ -18,6 +18,14 @@ public final class WorldRelayServer {
     public static void main(String[] args) {
         System.Logger logger = System.getLogger(WorldRelayServer.class.getName());
         try {
+            if (args.length == 1 && "--config".equals(args[0])) {
+                boolean created = ServerConfig.createDefaultFile(ServerConfig.CONFIG_FILE);
+                ServerConfig.load(ServerConfig.CONFIG_FILE).createDirectories();
+                logger.log(System.Logger.Level.INFO, created
+                    ? "Created server.properties and runtime directories; initialization complete"
+                    : "Kept existing server.properties and initialized runtime directories");
+                return;
+            }
             ServerConfig config = ServerConfig.fromArgs(args);
             try (WorldRelayService server = new WorldRelayService(config)) {
                 CountDownLatch stopped = new CountDownLatch(1);

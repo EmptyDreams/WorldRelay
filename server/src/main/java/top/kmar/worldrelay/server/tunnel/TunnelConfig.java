@@ -31,7 +31,7 @@ public record TunnelConfig(Mode mode, String bindAddress, int port, String publi
         return new TunnelConfig(mode, properties.getProperty("tunnel.bind-address", mode == Mode.WSS ? "127.0.0.1" : "0.0.0.0").strip(),
             port, properties.getProperty("tunnel.public-host", "").strip(),
             Integer.parseInt(properties.getProperty("tunnel.public-port", Integer.toString(port)).strip()),
-            Path.of(properties.getProperty("tunnel.tls-directory", defaults.tlsDirectory().toString())));
+            defaults.tlsDirectory());
     }
 
 }

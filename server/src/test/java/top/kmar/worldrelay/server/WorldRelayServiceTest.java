@@ -17,6 +17,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -42,7 +43,7 @@ class WorldRelayServiceTest {
 
     /**
      * 验证注册响应、重复注册冲突，以及受保护的接口在注册前后和重启后的鉴权行为。
-     * 请求日志不能泄露原始 Token 或认证头。
+     * 服务自动补齐运行目录，请求日志不能泄露原始 Token 或认证头。
      */
     @Test
     void registersAuthenticatesAndRetainsCredentialsAcrossRestartWithoutLoggingTokens() throws Exception {
@@ -67,6 +68,10 @@ class WorldRelayServiceTest {
         try (HttpClient client = client()) {
             try (WorldRelayService service = new WorldRelayService(config())) {
                 service.start();
+                for (Path runtimeDirectory : List.of(config().worldsDirectory(), config().ssh().transferDirectory(),
+                    config().tunnel().tlsDirectory(), config().ssh().authorizedKeysFile().getParent())) {
+                    assertTrue(Files.isDirectory(runtimeDirectory), runtimeDirectory.toString());
+                }
                 assertEquals("127.0.0.1", service.registrationAddress().getAddress().getHostAddress());
                 assertNotEquals(service.apiAddress().getPort(), service.registrationAddress().getPort());
                 assertEquals(401, send(client, api(service, "/api/v1/worlds").GET().build()).statusCode());

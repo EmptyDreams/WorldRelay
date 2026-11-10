@@ -49,6 +49,7 @@ public final class WorldRelayService implements AutoCloseable {
             throw new IllegalStateException("Service cannot be started again");
         }
         try {
+            config.createDirectories();
             users = userStoreFactory.open(config.usersFile(), config.ssh());
             worlds = WorldStore.open(config.worldsDirectory(), config.heartbeatIntervalSeconds(), config.heartbeatTimeoutSeconds());
             worlds.configureUsers(users::isEnabled);

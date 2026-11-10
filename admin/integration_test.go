@@ -54,7 +54,7 @@ func isolatedServer(t *testing.T) (string, int, int) {
 	if err := os.WriteFile(filepath.Join(dir, "host.pub"), []byte("ssh-ed25519 "+base64.StdEncoding.EncodeToString(public.Bytes())+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	config := "http.bind-address=127.0.0.1\nhttp.port=0\nregistration.port=0\nhttp.shutdown-grace-seconds=0\nauth.users-file=data/users.json\nworlds.directory=data/worlds\ntunnel.mode=wss\ntunnel.bind-address=127.0.0.1\ntunnel.port=0\nssh.host-public-key-file=host.pub\nssh.transfer-directory=data/transfers\nssh.rrsync-command=/usr/bin/false\nretention.minimum-free-bytes=0\n"
+	config := "http.bind-address=127.0.0.1\nhttp.port=0\nregistration.port=0\nhttp.shutdown-grace-seconds=0\ntunnel.mode=wss\ntunnel.bind-address=127.0.0.1\ntunnel.port=0\nssh.host-public-key-file=host.pub\nssh.rrsync-command=/usr/bin/false\nretention.minimum-free-bytes=0\n"
 	if err := os.WriteFile(filepath.Join(dir, "server.properties"), []byte(config), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func isolatedServer(t *testing.T) (string, int, int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(java, "-Xmx256m", "-Duser.home="+dir, "-jar", jar, "--config", filepath.Join(dir, "server.properties"))
+	cmd := exec.Command(java, "-Xmx256m", "-Duser.home="+dir, "-jar", jar)
 	cmd.Dir = dir
 	cmd.Stdout = log
 	cmd.Stderr = log
