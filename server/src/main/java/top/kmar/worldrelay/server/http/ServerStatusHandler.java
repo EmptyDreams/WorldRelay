@@ -27,6 +27,7 @@ public final class ServerStatusHandler implements HttpHandler {
     private final Instant startedAt = Instant.now();
     private final long started = System.nanoTime();
     private final String version = version();
+    private final SystemMetrics systemMetrics = new SystemMetrics();
 
     public ServerStatusHandler(ServerConfig config, UserStore users, WorldStore worlds, TunnelGateway tunnels, TransferJobs jobs) {
         this.config = config;
@@ -50,26 +51,44 @@ public final class ServerStatusHandler implements HttpHandler {
     @Override
     public void handle(HttpExchange exchange) throws IOException {
         var runtime = Runtime.getRuntime();
-        long committed = runtime.totalMemory();
-        long used = Math.max(0, committed - runtime.freeMemory());
+        boolean nativeImage = System.getProperty("org.graalvm.nativeimage.kind") != null;
         var stats = jobs.stats(null);
+        var listedWorlds = worlds.list();
+        var accounts = users.list();
+        var online = tunnels.onlineUsers();
         var writer = new JsonWriter().beginObject().name("version").value(version)
             .name("javaVersion").value(System.getProperty("java.version"))
-            .name("nativeImage").value(System.getProperty("org.graalvm.nativeimage.kind") != null)
+            .name("nativeImage").value(nativeImage)
             .name("startedAt").value(startedAt.toString()).name("uptimeMillis").value((System.nanoTime() - started) / 1_000_000)
-            .name("worlds").value(worlds.list().size()).name("users").value(users.list().size())
-            .name("heap").beginObject().name("usedBytes").value(used)
-            .name("committedBytes").value(committed).name("maxBytes").value(runtime.maxMemory()).endObject()
-            .name("tunnel").beginObject().name("mode").value(config.tunnel().mode().name().toLowerCase(java.util.Locale.ROOT))
+            .name("worlds").value(listedWorlds.size())
+            .name("ownedWorlds").value(listedWorlds.stream().filter(world -> world.hostName() != null).count())
+            .name("users").value(accounts.size())
+            .name("onlineUsers").value(accounts.stream().filter(account -> account.enabled() && online.contains(account.username())).count())
+            .name("heap");
+        writeHeap(writer, runtime.totalMemory(), runtime.freeMemory(), runtime.maxMemory(), nativeImage);
+        writer.name("tunnel").beginObject().name("mode").value(config.tunnel().mode().name().toLowerCase(java.util.Locale.ROOT))
             .name("connections").value(tunnels.connectionCount()).name("hosts").value(tunnels.hostCount()).endObject()
             .name("tasks");
         WorldManagementHandler.writeTasks(writer, stats);
         writer.name("completedOperations").value(stats.completed()).name("failedOperations").value(stats.failed())
-            .name("cancelledOperations").value(stats.cancelled()).name("storage").beginObject();
+            .name("cancelledOperations").value(stats.cancelled()).name("system");
+        systemMetrics.write(writer);
+        writer.name("storage").beginObject();
         storage(writer, "worlds", config.worldsDirectory());
         storage(writer, "transfers", config.ssh().transferDirectory());
         String response = writer.endObject().endObject().finish();
         HttpResponses.bytes(exchange, 200, "application/json; charset=utf-8", response.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Native Image 的 Serial GC 将 totalMemory 定义为堆上限，不能将其当作已分配容量。 */
+    static void writeHeap(JsonWriter writer, long total, long free, long max, boolean nativeImage) {
+        writer.beginObject().name("usedBytes").value(Math.max(0, total - free)).name("committedBytes");
+        if (nativeImage) {
+            writer.nullValue();
+        } else {
+            writer.value(total);
+        }
+        writer.name("maxBytes").value(max).endObject();
     }
 
     private static void storage(JsonWriter writer, String name, Path configured) {

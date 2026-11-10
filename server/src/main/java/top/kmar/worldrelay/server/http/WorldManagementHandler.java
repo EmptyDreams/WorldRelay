@@ -17,9 +17,10 @@ import java.util.Set;
 /** 本机管理查询与维护；删除请求必须来自仍匹配当前元数据的已确认预览。 */
 public final class WorldManagementHandler implements HttpHandler {
 
-    public enum Action {LIST, DETAIL, HISTORY, RENAME, DELETE_PREVIEW, DELETE}
+    public enum Action {LIST, DETAIL, HISTORY, RENAME, DELETE_PREVIEW, DELETE, BACKUP_DELETE_PREVIEW, BACKUP_DELETE}
 
     private static final Set<String> DELETE_FIELDS = Set.of("worldId", "deleteId", "expectedName", "expectedEpoch", "expectedVersion", "metadataHash", "confirm");
+    private static final Set<String> BACKUP_DELETE_FIELDS = Set.of("worldId", "deleteId", "backupVersion", "snapshotId", "expectedVersion", "expectedEpoch", "confirm");
     private final WorldStore worlds;
     private final WorldAdministration administration;
     private final WorldRetention retention;
@@ -48,13 +49,32 @@ public final class WorldManagementHandler implements HttpHandler {
                 Set<String> required = switch (action) {
                     case RENAME -> Set.of("worldId", "name", "expectedName");
                     case DELETE -> DELETE_FIELDS;
+                    case BACKUP_DELETE -> BACKUP_DELETE_FIELDS;
+                    case BACKUP_DELETE_PREVIEW -> Set.of("worldId", "backupVersion");
                     default -> Set.of("worldId");
                 };
                 var body = AdminRequests.read(exchange, required, action == Action.HISTORY ? Set.of("limit", "beforeEpoch") : Set.of());
                 String world = AdminRequests.string(body, "worldId");
                 WorldStore.validateId(world);
                 var writer = new JsonWriter();
-                if (action == Action.HISTORY) {
+                if (action == Action.BACKUP_DELETE_PREVIEW) {
+                    response = retention.previewBackupDeletion(world, AdminRequests.requiredNumber(body, "backupVersion")).toJson(false);
+                } else if (action == Action.BACKUP_DELETE) {
+                    if (!Boolean.TRUE.equals(body.get("confirm")))
+                        throw new WorldAccessException(400, "DELETE_CONFIRMATION_REQUIRED", "Preview and confirm backup deletion");
+                    var request = new WorldRetention.BackupDeletion(world, AdminRequests.string(body, "deleteId"),
+                        AdminRequests.requiredNumber(body, "backupVersion"), AdminRequests.string(body, "snapshotId"),
+                        AdminRequests.requiredNumber(body, "expectedVersion"), AdminRequests.requiredNumber(body, "expectedEpoch"));
+                    response = jobs.poll("backup-delete:" + request, world, null, "BACKUP_DELETE", () -> {
+                        retention.deleteBackup(request);
+                        return new JsonWriter().beginObject().name("worldId").value(world).name("deleteId").value(request.deleteId())
+                            .name("backupVersion").value(request.backupVersion()).name("deleted").value(true).endObject().finish();
+                    });
+                    if (response == null) {
+                        HttpResponses.bytes(exchange, 202, "application/json; charset=utf-8", "{\"pending\":true}".getBytes(StandardCharsets.UTF_8));
+                        return;
+                    }
+                } else if (action == Action.HISTORY) {
                     int limit = body.containsKey("limit") ? Math.toIntExact(AdminRequests.requiredNumber(body, "limit")) : 50;
                     response = administration.history(world, body.containsKey("beforeEpoch") ? AdminRequests.requiredNumber(body, "beforeEpoch") : null, limit);
                 } else if (action == Action.DELETE_PREVIEW) {
@@ -86,6 +106,10 @@ public final class WorldManagementHandler implements HttpHandler {
                     administration.detail(writer, world);
                     writer.name("tasks");
                     writeTasks(writer, jobs.stats(world));
+                    if (action == Action.DETAIL) {
+                        writer.name("storage");
+                        retention.writeStorage(writer, world);
+                    }
                     response = writer.endObject().finish();
                 }
             }
@@ -94,7 +118,7 @@ public final class WorldManagementHandler implements HttpHandler {
             HttpResponses.error(exchange, failure.status(), failure.code(), failure.getMessage());
         } catch (IllegalArgumentException | java.nio.charset.CharacterCodingException failure) {
             HttpResponses.error(exchange, 400, "INVALID_MANAGEMENT_REQUEST", "Invalid world management request");
-        } catch (IOException failure) {
+        } catch (Exception failure) {
             HttpResponses.error(exchange, 503, "WORLD_MANAGEMENT_FAILED", "World operation requires retry or server recovery");
         }
     }

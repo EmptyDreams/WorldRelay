@@ -169,7 +169,7 @@ class TunnelGatewayTest {
 
     }
 
-    /** 两种传输均通过真实 Socket 并发转发不同世界的大数据，验证配对隔离、顺序和背压。 */
+    /** 两种传输通过真实 Socket 验证跨世界转发、背压，以及同账号多世界连接的在线人数去重。 */
     @ParameterizedTest
     @EnumSource(TunnelConfig.Mode.class)
     void forwardsConcurrentWorldsWithoutMixingStreams(TunnelConfig.Mode mode) throws Exception {
@@ -178,7 +178,9 @@ class TunnelGatewayTest {
             var worldB = fixture.world();
             fixture.host(worldA, first.port());
             fixture.host(worldB, second.port());
+            assertEquals(Set.of("Host"), fixture.gateway.onlineUsers());
             try (Socket a = fixture.guest(worldA); Socket b = fixture.guest(worldB)) {
+                assertEquals(Set.of("Host", "Guest"), fixture.gateway.onlineUsers());
                 // 持续传输多轮，让可写/不可写的跨事件循环切换反复发生。
                 for (int round = 0; round < 4; round++) {
                     byte[] data = new byte[4 * 1024 * 1024];
@@ -313,6 +315,7 @@ class TunnelGatewayTest {
                 Thread.onSpinWait();
             }
             assertEquals("RECOVERY_REQUIRED", fixture.worlds.list().getFirst().status());
+            assertEquals(Set.of(), fixture.gateway.onlineUsers());
             assertThrows(WorldAccessException.class, () -> fixture.worlds.acquire(world.id, "Guest", UUID.randomUUID().toString(), UUID.randomUUID().toString()));
             fixture.host(world, echo.port());
             assertEquals("RUNNING", fixture.worlds.list().getFirst().status());

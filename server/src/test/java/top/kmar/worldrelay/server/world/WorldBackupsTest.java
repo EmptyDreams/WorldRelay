@@ -44,6 +44,7 @@ class WorldBackupsTest {
             assertEquals(3, result.version());
             assertEquals(3, result.epoch());
             assertEquals(2, result.previousVersion());
+            assertTrue(backups.list(data.world()).contains("\"current\":true,\"restoredFromVersion\":1"));
             assertEquals("first-world", Files.readString(data.snapshot(result.restoreId()).resolve("world/level.dat")));
             assertEquals("first-world-train", Files.readString(data.snapshot(result.restoreId()).resolve("world/mod-data/train.dat")));
             assertTrue(Files.isDirectory(data.snapshot(result.restoreId()).resolve("world/mod-data/empty")));

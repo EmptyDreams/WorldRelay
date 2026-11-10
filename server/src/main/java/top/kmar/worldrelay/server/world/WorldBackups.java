@@ -80,8 +80,19 @@ public final class WorldBackups {
         writer.name("epoch").value(metadata.state().epoch()).name("canRestore").value(state.canRestore()).name("backups").beginArray();
         for (var backup : backups(metadata)) {
             var reference = backup.reference();
+            Long restoredFrom = null;
+            for (var commit : metadata.commits()) {
+                if (commit.version() == reference.version()) {
+                    restoredFrom = commit.restoredFromVersion();
+                    break;
+                }
+            }
             writer.beginObject().name("version").value(reference.version()).name("committedAt").value(reference.committedAt())
-                .name("current").value(Objects.equals(reference.version(), metadata.state().committedVersion())).endObject();
+                .name("current").value(Objects.equals(reference.version(), metadata.state().committedVersion()))
+                .name("restoredFromVersion");
+            if (restoredFrom == null) writer.nullValue();
+            else writer.value(restoredFrom);
+            writer.endObject();
         }
         return writer.endArray().endObject().finish();
     }

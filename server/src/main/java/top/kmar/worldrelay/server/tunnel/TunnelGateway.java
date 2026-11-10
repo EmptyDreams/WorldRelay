@@ -24,6 +24,7 @@ import java.net.InetSocketAddress;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.*;
@@ -236,6 +237,20 @@ public final class TunnelGateway implements AutoCloseable {
 
     public int hostCount() {
         return (int) leases.values().stream().filter(Lease::current).count();
+    }
+
+    /** 已连接房主与已配对访客按账号去重；待用票据、未认证连接和重复数据通道不增加人数。 */
+    public Set<String> onlineUsers() {
+        Set<String> online = new HashSet<>();
+        for (Lease lease : leases.values()) {
+            if (!lease.current()) continue;
+            for (Peer peer : lease.connections) {
+                if (peer.principal != null && (peer.controller || peer.ready) && peer.channel().isActive()) {
+                    online.add(peer.principal);
+                }
+            }
+        }
+        return Set.copyOf(online);
     }
 
     /** 关闭受禁用用户的房主或访客连接，保留世界所有权。 */

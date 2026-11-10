@@ -127,6 +127,62 @@ class ManagementHttpTest {
         return Map.of("worldId", world, "deviceId", device, "sessionId", granted.get("sessionId"), "epoch", granted.get("epoch"));
     }
 
+    /** 验证详情的上一持有者及分类占用；历史备份删除需确认、拒绝过时任期并支持重启后重试。 */
+    @Test
+    void measuresStorageAndDeletesOnlyConfirmedHistoricalBackups() throws Exception {
+        var data = BackupTestWorld.create(config().worldsDirectory());
+        String auth = users();
+        Path temporary = data.directory().resolve(".candidate-storage");
+        Files.createDirectories(temporary);
+        Files.writeString(temporary.resolve("payload"), "tmp");
+        Path transfer = config().ssh().transferDirectory().resolve(".sessions").resolve("a".repeat(64)).resolve(data.world()).resolve("1/upload-test");
+        Files.createDirectories(transfer);
+        Files.writeString(transfer.resolve("payload"), "xfer!");
+        Map<String, Object> deletion;
+        try (var client = HttpClient.newHttpClient()) {
+            try (var service = new WorldRelayService(config())) {
+                service.start();
+                int admin = service.registrationAddress().getPort();
+                var detail = call(client, admin, "worlds/detail", Map.of("worldId", data.world()), null, 200);
+                assertEquals("Dev", object(detail.get("world")).get("previousOwner"));
+                var storage = object(detail.get("storage"));
+                assertEquals(3L, storage.get("temporaryBytes"));
+                assertEquals(5L, storage.get("transferBytes"));
+                assertTrue((long) storage.get("currentBytes") > 0);
+                assertTrue((long) storage.get("backupBytes") > 0);
+                assertEquals((long) storage.get("currentBytes") + (long) storage.get("backupBytes") + 8L + (long) storage.get("metadataBytes"), storage.get("totalBytes"));
+                call(client, service.apiAddress().getPort(), "worlds/backup-delete-preview", Map.of("worldId", data.world(), "backupVersion", 1), auth, 404);
+                call(client, admin, "worlds/backup-delete-preview", Map.of("worldId", data.world(), "backupVersion", 2), null, 409);
+                var stale = call(client, admin, "worlds/backup-delete-preview", Map.of("worldId", data.world(), "backupVersion", 1), null, 200);
+                call(client, admin, "worlds/backup-delete", stale, null, 400);
+                acquire(client, service, data.world(), auth);
+                stale.put("confirm", true);
+                call(client, admin, "worlds/backup-delete", stale, null, 409);
+                assertTrue(Files.isDirectory(data.snapshot(data.first())));
+                var abandon = call(client, admin, "worlds/abandon-preview", Map.of("worldId", data.world()), null, 200);
+                abandon.put("confirm", true);
+                abandon.put("reason", "删除备份测试");
+                call(client, admin, "worlds/abandon", abandon, null, 200);
+                deletion = call(client, admin, "worlds/backup-delete-preview", Map.of("worldId", data.world(), "backupVersion", 1), null, 200);
+                deletion.put("confirm", true);
+                var forged = new HashMap<>(deletion);
+                forged.put("snapshotId", data.second());
+                call(client, admin, "worlds/backup-delete", forged, null, 409);
+                assertEquals(true, call(client, admin, "worlds/backup-delete", deletion, null, 200).get("deleted"));
+                assertFalse(Files.exists(data.snapshot(data.first())));
+                assertTrue(Files.isDirectory(data.snapshot(data.second())));
+                assertEquals(1, ((List<?>) call(client, admin, "worlds/backups", Map.of("worldId", data.world()), null, 200).get("backups")).size());
+            }
+            try (var service = new WorldRelayService(config())) {
+                service.start();
+                assertEquals(true, call(client, service.registrationAddress().getPort(), "worlds/backup-delete", deletion, null, 200).get("deleted"));
+                var detail = call(client, service.registrationAddress().getPort(), "worlds/detail", Map.of("worldId", data.world()), null, 200);
+                assertEquals(2L, object(detail.get("world")).get("committedVersion"));
+                assertEquals(deletion.get("expectedEpoch"), object(detail.get("world")).get("epoch"));
+            }
+        }
+    }
+
     /** 验证管理查询、改名、按任期分页历史、带确认的删除及重启幂等；所有快照先进入回收目录。 */
     @Test
     void queriesRenamesHistoriesAndDeletesWithoutAPlayerToken() throws Exception {
@@ -144,6 +200,11 @@ class ManagementHttpTest {
                 assertNull(object(detail.get("world")).get("owner"));
                 var status = call(client, admin, "status", null, null, 200);
                 assertNotEquals("unknown", status.get("version"));
+                assertEquals(1L, status.get("worlds"));
+                assertEquals(0L, status.get("ownedWorlds"));
+                assertEquals(2L, status.get("users"));
+                assertEquals(0L, status.get("onlineUsers"));
+                assertTrue((long) object(object(status.get("system")).get("cpu")).get("availableProcessors") > 0);
                 assertTrue((long) object(status.get("heap")).get("maxBytes") > 0);
                 assertTrue((long) object(status.get("heap")).get("usedBytes") >= 0);
                 assertTrue((long) object(status.get("heap")).get("usedBytes") <= (long) object(status.get("heap")).get("committedBytes"));
@@ -165,10 +226,12 @@ class ManagementHttpTest {
                 oldPreview.put("confirm", true);
                 call(client, admin, "worlds/delete", oldPreview, null, 409);
                 var owner = acquire(client, service, data.world(), auth);
+                assertEquals(1L, call(client, admin, "status", null, null, 200).get("ownedWorlds"));
                 call(client, admin, "worlds/delete-preview", Map.of("worldId", data.world()), null, 409);
                 var abandon = call(client, admin, "worlds/abandon-preview", Map.of("worldId", data.world()), null, 200);
                 abandon.put("confirm", true);
                 call(client, admin, "worlds/abandon", abandon, null, 200);
+                assertEquals(0L, call(client, admin, "status", null, null, 200).get("ownedWorlds"));
                 var restore = call(client, admin, "worlds/restore-preview", Map.of("worldId", data.world(), "backupVersion", 1), null, 200);
                 restore.put("confirm", true);
                 call(client, admin, "worlds/restore", restore, null, 200);
@@ -218,6 +281,7 @@ class ManagementHttpTest {
                 var detail = object(call(client, admin, "worlds/detail", Map.of("worldId", data.world()), null, 200).get("world"));
                 assertEquals("Dev", object(detail.get("owner")).get("username"));
                 assertEquals(owner.get("epoch"), detail.get("epoch"));
+                assertEquals(1L, call(client, admin, "status", null, null, 200).get("ownedWorlds"));
                 String listed = request(client, admin, "users", null, null).body();
                 assertFalse(listed.contains("tokenHash"));
                 assertFalse(listed.contains("privateKey"));

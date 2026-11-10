@@ -4,6 +4,10 @@ build/
 !gradle/wrapper/gradle-wrapper.jar
 !**/src/**/build/
 
+### Admin console ###
+/admin/worldrelay-admin
+/admin/state/
+
 ### IntelliJ IDEA ###
 .idea/
 *.iws

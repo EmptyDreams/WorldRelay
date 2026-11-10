@@ -103,6 +103,57 @@ public final class WorldRetention implements AutoCloseable {
         return worlds.delete(request);
     }
 
+    public record BackupDeletion(String worldId, String deleteId, long backupVersion, String snapshotId,
+                                 long expectedVersion, long expectedEpoch) {
+
+        public BackupDeletion {
+            WorldStore.validateId(worldId);
+            WorldStore.validateId(deleteId);
+            WorldStore.validateId(snapshotId);
+            if (backupVersion < 1 || backupVersion >= expectedVersion || expectedEpoch < 0)
+                throw new IllegalArgumentException("Only historical backups can be deleted");
+        }
+
+        public String toJson(boolean confirm) {
+            return new top.kmar.worldrelay.server.json.JsonWriter().beginObject().name("worldId").value(worldId)
+                .name("deleteId").value(deleteId).name("backupVersion").value(backupVersion).name("snapshotId").value(snapshotId)
+                .name("expectedVersion").value(expectedVersion).name("expectedEpoch").value(expectedEpoch)
+                .name("confirm").value(confirm).endObject().finish();
+        }
+
+    }
+
+    public synchronized BackupDeletion previewBackupDeletion(String worldId, long version) throws IOException, WorldAccessException {
+        if (version < 1) throw new IllegalArgumentException("Invalid backup version");
+        if (activeOperations.containsKey(worldId)) throw new WorldAccessException(409, "WORLD_BUSY", "World has an active file operation");
+        var state = worlds.backupState(worldId);
+        if (!state.canRestore()) throw new WorldAccessException(409, "WORLD_NOT_FREE", "World must be unowned before deleting a backup");
+        var metadata = state.metadata();
+        if (metadata.state().committedVersion() == null || version >= metadata.state().committedVersion())
+            throw new WorldAccessException(409, "BACKUP_PROTECTED", "Current authoritative snapshot cannot be deleted");
+        var backup = snapshots(metadata).stream().filter(item -> item.commit().version() == version).findFirst()
+            .orElseThrow(() -> new WorldAccessException(404, "BACKUP_NOT_FOUND", "Backup is no longer retained"));
+        return new BackupDeletion(worldId, UUID.randomUUID().toString(), version, backup.commit().uploadId(),
+            metadata.state().committedVersion(), metadata.state().epoch());
+    }
+
+    public synchronized void deleteBackup(BackupDeletion request) throws IOException, WorldAccessException {
+        if (activeOperations.containsKey(request.worldId())) throw new WorldAccessException(409, "WORLD_BUSY", "World has an active file operation");
+        Path trash = worlds.retireBackup(request);
+        if (trash != null) deleteTree(trash);
+        LOG.log(System.Logger.Level.INFO, "Deleted backup: world={0}, version={1}, deletion={2}",
+            request.worldId(), request.backupVersion(), request.deleteId());
+    }
+
+    public void writeStorage(top.kmar.worldrelay.server.json.JsonWriter writer, String worldId) throws WorldAccessException {
+        var metadata = worlds.backupState(worldId).metadata();
+        try {
+            WorldStorage.write(writer, worlds, transfers, metadata);
+        } catch (IOException failure) {
+            writer.nullValue();
+        }
+    }
+
     private void backgroundSweep() {
         try {
             sweep();

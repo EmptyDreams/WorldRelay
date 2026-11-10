@@ -39,6 +39,8 @@ public final class WorldAdministration {
         number(writer, "baseVersion", state.baseVersion());
         text(writer, "lastCommittedAt", state.lastCommittedAt());
         text(writer, "lastContactAt", entry.lastContactAt() == null ? null : entry.lastContactAt().toString());
+        text(writer, "previousOwner", events(metadata).stream().filter(event -> !event.type().equals("RESTORE"))
+            .max(Comparator.comparingLong(Event::epoch)).map(event -> event.owner().username()).orElse(null));
         number(writer, "playerCount", entry.players() == null ? null : entry.players().longValue());
         writer.name("owner");
         if (state.owner() == null) writer.nullValue();

@@ -760,6 +760,24 @@ public final class WorldStore implements AutoCloseable {
     }
 
     /** 在元数据锁内重新判断，避免清理与发布或不确定写盘结果交错。 */
+    synchronized Path retireBackup(WorldRetention.BackupDeletion request) throws IOException, WorldAccessException {
+        Entry entry = entry(request.worldId());
+        Path path = root.resolve(request.worldId()).resolve("snapshots").resolve(request.snapshotId());
+        // 快照 ID 永不复用；已撤出的同一备份可安全重试，不会误删后续版本。
+        if (Files.notExists(path, LinkOption.NOFOLLOW_LINKS)) return null;
+        var state = entry.metadata.state();
+        if (state.epoch() != request.expectedEpoch() || !Objects.equals(state.committedVersion(), request.expectedVersion())
+            || state.owner() != null || entry.restore != null)
+            throw conflict("WORLD_CHANGED", "World changed after backup deletion preview");
+        var reference = snapshotReferences(entry.metadata).stream().filter(item -> item.uploadId().equals(request.snapshotId())
+            && item.version() == request.backupVersion()).findFirst();
+        if (reference.isEmpty()) throw conflict("BACKUP_CHANGED", "Backup no longer matches the deletion preview");
+        Path trash = retireSnapshot(request.worldId(), request.snapshotId());
+        if (trash == null) throw conflict("BACKUP_PROTECTED", "Current or pinned snapshots cannot be deleted");
+        return trash;
+    }
+
+    /** 在元数据锁内重新判断，避免清理与发布或不确定写盘结果交错。 */
     synchronized Path retireSnapshot(String worldId, String uploadId) throws IOException {
         ensureOpen();
         Entry entry = worlds.get(worldId);
