@@ -1,0 +1,63 @@
+name: Admin Console
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  push:
+    # 发布标签由服务端工作流调用，分支变更保留独立检查。
+    branches:
+      - '**'
+    paths:
+      - 'admin/**'
+      - '.github/workflows/admin.yml'
+  pull_request:
+    paths:
+      - 'admin/**'
+      - '.github/workflows/admin.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: admin
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+          cache-dependency-path: admin/go.sum
+      - name: Verify dependencies, format, tests and static checks
+        run: |
+          go mod download
+          go mod verify
+          test -z "$(gofmt -l *.go)"
+          go test -race -count=1 ./...
+          go vet ./...
+      - name: Build static executables
+        run: |
+          for item in x64:amd64 arm64:arm64; do
+            name="${item%%:*}"
+            arch="${item##*:}"
+            mkdir -p "build/linux-$name"
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
+              -ldflags="-s -w -X main.version=$GITHUB_SHA" \
+              -o "build/linux-$name/worldrelay-admin" .
+            cp README.md "build/linux-$name/README.md"
+            tar -C "build/linux-$name" -czf "build/worldrelay-admin-linux-$name.tar.gz" worldrelay-admin README.md
+          done
+          cd build
+          sha256sum worldrelay-admin-linux-*.tar.gz > SHA256SUMS
+      - name: Verify executable in a pseudo terminal
+        run: python3 -B terminal-smoke.py build/linux-x64/worldrelay-admin
+      - uses: actions/upload-artifact@v7
+        with:
+          name: worldrelay-admin-linux
+          path: |
+            admin/build/worldrelay-admin-linux-*.tar.gz
+            admin/build/SHA256SUMS
+          if-no-files-found: error

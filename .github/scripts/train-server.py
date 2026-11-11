@@ -284,6 +284,8 @@ class Workload:
         require(status["version"] != "unknown", "Build version resource is missing")
         if status["nativeImage"]:
             require(0 < status["heap"]["maxBytes"] <= 512 * 1024 * 1024, "Native runtime heap cap is not 512 MiB")
+            require(0 <= status["heap"]["usedBytes"] <= status["heap"]["maxBytes"], "Invalid Native heap usage")
+            require(status["heap"]["committedBytes"] is None, "Native heap limit must not be reported as committed memory")
         accounts = {item["username"]: item for item in self.call("users", admin=True)["users"]}
         require(not accounts["Disabled"]["enabled"], "Disabled account was not retained across restart")
         self.call("worlds", user="Disabled", expected=401)

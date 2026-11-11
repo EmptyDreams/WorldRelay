@@ -76,8 +76,7 @@ def running_server(command, directory, mode, attempt, *, properties=None, profil
     config = directory / "server.properties"
     config.write_text(
         "http.bind-address=127.0.0.1\nhttp.port=0\nregistration.port=0\n"
-        "http.shutdown-grace-seconds=0\nauth.users-file=data/users.json\n"
-        "worlds.directory=data/worlds\n"
+        "http.shutdown-grace-seconds=0\n"
         f"tunnel.mode={mode}\ntunnel.bind-address=127.0.0.1\ntunnel.port=0\n"
         "tunnel.public-host=127.0.0.1\ntunnel.public-port=2002\n"
         + "".join(f"{key}={value}\n" for key, value in (properties or {}).items()),
@@ -85,8 +84,14 @@ def running_server(command, directory, mode, attempt, *, properties=None, profil
     )
     log = directory / f"{attempt}-{mode}.log"
     with log.open("wb") as output:
-        runtime_options = [] if profile is None else [f"-XX:ProfilesDumpFile={profile}"]
-        process = subprocess.Popen(command + runtime_options + ["--config", str(config)], cwd=directory,
+        # JVM 与原生程序都使用临时主目录，避免测试修改真实账户的 SSH 公钥。
+        runtime_options = [f"-Duser.home={directory / 'home'}"]
+        if profile is not None:
+            runtime_options.append(f"-XX:ProfilesDumpFile={profile}")
+        runtime_command = list(command)
+        option_index = runtime_command.index("-jar") if "-jar" in runtime_command else len(runtime_command)
+        runtime_command[option_index:option_index] = runtime_options
+        process = subprocess.Popen(runtime_command, cwd=directory,
                                    stdout=output, stderr=subprocess.STDOUT)
         try:
             deadline = time.monotonic() + 45

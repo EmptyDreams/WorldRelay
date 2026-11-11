@@ -10,6 +10,10 @@ permissions:
   contents: read
 
 jobs:
+  admin:
+    name: Build admin console
+    uses: ./.github/workflows/admin.yml
+
   linux:
     name: Linux ${{ matrix.arch }}
     strategy:
@@ -40,6 +44,24 @@ jobs:
 
       - name: Build and test server JAR
         run: bash ./gradlew :server:build --no-daemon --console=plain
+
+      - name: Package server JAR
+        if: matrix.arch == 'x64'
+        run: |
+          mkdir -p server/build/release
+          cp server/build/libs/server-0.1.0-SNAPSHOT.jar server/build/release/worldrelay-server.jar
+          cd server/build/release
+          sha256sum worldrelay-server.jar > worldrelay-server.jar.sha256
+
+      - name: Upload server JAR
+        if: matrix.arch == 'x64'
+        uses: actions/upload-artifact@v7
+        with:
+          name: worldrelay-server-jar
+          path: |
+            server/build/release/worldrelay-server.jar
+            server/build/release/worldrelay-server.jar.sha256
+          if-no-files-found: error
 
       - name: Setup GraalVM 25
         uses: graalvm/setup-graalvm@v1
@@ -121,8 +143,8 @@ jobs:
           if-no-files-found: ignore
 
   release:
-    name: Publish server release
-    needs: linux
+    name: Publish server and admin release
+    needs: [linux, admin]
     if: startsWith(github.ref, 'refs/tags/server-v')
     runs-on: ubuntu-22.04
     timeout-minutes: 10
@@ -140,22 +162,47 @@ jobs:
           merge-multiple: true
           path: release-assets
 
+      - name: Download admin console
+        uses: actions/download-artifact@v8
+        with:
+          name: worldrelay-admin-linux
+          path: release-assets
+
+      - name: Download server JAR
+        uses: actions/download-artifact@v8
+        with:
+          name: worldrelay-server-jar
+          path: release-assets
+
       - name: Verify and publish release assets
         working-directory: release-assets
         run: |
           for arch in x64 arm64; do
-            test -f "worldrelay-server-linux-$arch.tar.gz"
+            test -s "worldrelay-server-linux-$arch.tar.gz"
+            test -s "worldrelay-admin-linux-$arch.tar.gz"
             sha256sum -c "worldrelay-server-linux-$arch.tar.gz.sha256"
           done
+          test -s worldrelay-server.jar
+          sha256sum -c worldrelay-server.jar.sha256
+          sha256sum -c SHA256SUMS
+          assets=(
+            worldrelay-server-linux-x64.tar.gz
+            worldrelay-server-linux-arm64.tar.gz
+            worldrelay-admin-linux-x64.tar.gz
+            worldrelay-admin-linux-arm64.tar.gz
+            worldrelay-server.jar
+          )
+          sha256sum "${assets[@]}" > SHA256SUMS
           version="${RELEASE_TAG#server-v}"
           options=()
           if [[ "$version" == *-* ]]; then
             options+=(--prerelease)
           fi
           gh release create "$RELEASE_TAG" \
-            worldrelay-server-linux-x64.tar.gz \
+            "${assets[@]}" \
             worldrelay-server-linux-x64.tar.gz.sha256 \
-            worldrelay-server-linux-arm64.tar.gz \
             worldrelay-server-linux-arm64.tar.gz.sha256 \
+            worldrelay-server.jar.sha256 \
+            SHA256SUMS \
             --verify-tag --title "WorldRelay Server $version" --generate-notes \
             "${options[@]}"
