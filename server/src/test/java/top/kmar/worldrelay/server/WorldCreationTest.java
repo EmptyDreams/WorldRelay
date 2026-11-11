@@ -55,7 +55,7 @@ class WorldCreationTest {
                 assertEquals("application/json; charset=utf-8", created.headers().firstValue("Content-Type").orElseThrow());
                 assertTrue(created.headers().firstValue("X-Request-Id").isPresent());
                 first = stringField(created.body(), "worldId");
-                assertEquals("{\"worldId\":\"" + first + "\",\"name\":\"共同世界🌍\",\"status\":\"FREE\","
+                assertEquals("{\"worldId\":\"" + first + "\",\"name\":\"共同世界🌍\",\"allowOfflinePlayers\":false,\"status\":\"FREE\","
                     + "\"hostName\":null,\"playerCount\":0,\"lastCommittedAt\":null,\"endpoint\":null}", created.body());
                 assertTrue(Files.isRegularFile(config().worldsDirectory().resolve(first).resolve("world.json")));
                 HttpResponse<String> duplicateName = client.send(create(service, "{\"name\":\"共同世界🌍\"}"),
@@ -112,6 +112,9 @@ class WorldCreationTest {
                 "{\"name\":\"a\\u0000b\"}", "{\"name\":\"\\uD800\"}", "{\"name\":\"" + "🌍".repeat(65) + "\"}",
                 "{\"wrong\":\"name\"}", "{\"name\":\"a\",\"extra\":true}", "{\"name\":\"a\",\"worldId\":\"given\"}",
                 "{\"name\":\"a\",\"name\":\"b\"}",
+                "{\"name\":\"a\",\"allowOfflinePlayers\":\"true\"}",
+                "{\"name\":\"a\",\"allowOfflinePlayers\":null}",
+                "{\"name\":\"a\",\"allowOfflinePlayers\":true,\"allowOfflinePlayers\":false}",
                 "{\"name\":\"a\"} {}"}) {
                 var rejected = client.send(create(service, body), HttpResponse.BodyHandlers.ofString());
                 assertEquals(400, rejected.statusCode(), body);
@@ -135,6 +138,36 @@ class WorldCreationTest {
             }
             assertEquals(201, client.send(create(service, "{\"name\":\"" + "🌍".repeat(64) + "\"}"),
                 HttpResponse.BodyHandlers.ofString()).statusCode());
+        }
+    }
+
+    /** 创建接口接受固定登录模式，玩家列表与管理详情在重启后返回相同配置。 */
+    @Test
+    void createsWorldWithFixedOfflineLoginMode() throws Exception {
+        String auth = registerUser();
+        String world;
+        try (HttpClient client = HttpClient.newHttpClient()) {
+            try (WorldRelayService service = new WorldRelayService(config())) {
+                service.start();
+                var result = client.send(create(service, "{\"allowOfflinePlayers\":true,\"name\":\"离线世界\"}"),
+                    HttpResponse.BodyHandlers.ofString());
+                assertEquals(201, result.statusCode());
+                assertTrue(result.body().contains("\"allowOfflinePlayers\":true"));
+                world = stringField(result.body(), "worldId");
+            }
+            try (WorldRelayService service = new WorldRelayService(config())) {
+                service.start();
+                assertTrue(list(client, service, auth).body().contains("\"allowOfflinePlayers\":true"));
+                var uri = uri(service.registrationAddress().getPort(), "/api/v1/worlds/detail");
+                var request = HttpRequest.newBuilder(uri).header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString("{\"worldId\":\"" + world + "\"}")).build();
+                assertTrue(client.send(request, HttpResponse.BodyHandlers.ofString()).body().contains("\"allowOfflinePlayers\":true"));
+                var change = HttpRequest.newBuilder(uri(service.registrationAddress().getPort(), "/api/v1/worlds/rename"))
+                    .header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(
+                        "{\"worldId\":\"" + world + "\",\"expectedName\":\"离线世界\",\"name\":\"改名\",\"allowOfflinePlayers\":false}")).build();
+                assertEquals(400, client.send(change, HttpResponse.BodyHandlers.ofString()).statusCode());
+                assertTrue(list(client, service, auth).body().contains("\"allowOfflinePlayers\":true"));
+            }
         }
     }
 

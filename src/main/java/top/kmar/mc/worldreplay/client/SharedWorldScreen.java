@@ -101,7 +101,7 @@ public final class SharedWorldScreen extends Screen {
                     .map(world -> new ListedWorld(world.worldId(), Component.literal(world.name()),
                         WorldStatus.valueOf(world.status()), world.hostName(),
                         world.playerCount() == null ? -1 : world.playerCount(),
-                        world.lastCommittedAt() == null ? null : Instant.parse(world.lastCommittedAt()))).toList();
+                        world.lastCommittedAt() == null ? null : Instant.parse(world.lastCommittedAt()), world.allowOfflinePlayers())).toList();
             } catch (IOException e) {
                 throw new CompletionException(e);
             }
@@ -245,7 +245,7 @@ public final class SharedWorldScreen extends Screen {
     }
 
     /** 只描述本页展示需要的数据，不代表已经实现协调服务或游戏连接。 */
-    private record ListedWorld(String worldId, Component name, WorldStatus status, @Nullable String host, int players, @Nullable Instant lastSync) {
+    private record ListedWorld(String worldId, Component name, WorldStatus status, @Nullable String host, int players, @Nullable Instant lastSync, boolean allowOfflinePlayers) {
 
         Component hostName() {
             return host == null ? Component.translatable(TRANSLATION_PREFIX + "no_host") : Component.literal(host);
@@ -426,6 +426,7 @@ public final class SharedWorldScreen extends Screen {
             this.lastSyncText = WorldSyncTime.format(world.lastSync(), Instant.now(), ZoneId.systemDefault());
             int y = addParagraph(world.name(), TEXT_COLOR, PADDING, 2);
             y = addParagraph(world.status().label(), world.status().color, y, 6);
+            y = addParagraph(Component.translatable(TRANSLATION_PREFIX + (world.allowOfflinePlayers() ? "offline_allowed" : "online_only")), SECONDARY_TEXT_COLOR, y, 2);
             y = addParagraph(Component.translatable(TRANSLATION_PREFIX + "host", world.hostName()), SECONDARY_TEXT_COLOR, y, 2);
             y = addParagraph(Component.translatable(TRANSLATION_PREFIX + "players", world.playerCount()), SECONDARY_TEXT_COLOR, y, 2);
             y = addParagraph(Component.translatable(TRANSLATION_PREFIX + "last_sync", this.lastSyncText), SECONDARY_TEXT_COLOR, y, 6);

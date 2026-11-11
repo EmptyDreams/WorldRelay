@@ -27,6 +27,7 @@ const (
 	confirmScreen
 	resultScreen
 	operationScreen
+	worldModeScreen
 )
 
 type replyMsg struct {
@@ -74,6 +75,7 @@ type model struct {
 	worldLoading                            bool
 	worldError                              string
 	operationBack                           screen
+	newWorldName                            string
 	pageButtons                             map[screen]int
 }
 
@@ -260,6 +262,9 @@ func (m *model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.navigate(worldsScreen)
 			}
 			m.resultBack = m.screen
+			if m.screen == worldModeScreen {
+				m.resultBack = worldsScreen
+			}
 			if m.screen == formScreen {
 				m.resultBack = m.form.back
 			}
@@ -389,7 +394,11 @@ func (m *model) submit() tea.Cmd {
 	}
 	switch m.form.kind {
 	case "create-world":
-		return m.request("worlds", object{"name": value}, "mutation")
+		m.newWorldName = value
+		m.input.Blur()
+		m.screen, m.scroll = worldModeScreen, 0
+		m.pageButtons[worldModeScreen] = 0
+		return nil
 	case "create-user":
 		return m.request("register", object{"username": value}, "mutation")
 	case "rename":

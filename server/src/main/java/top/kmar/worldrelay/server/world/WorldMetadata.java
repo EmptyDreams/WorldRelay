@@ -9,8 +9,12 @@ import top.kmar.worldrelay.server.protocol.HostEndpoint;
 import java.time.Instant;
 import java.util.*;
 
-/** 所有权、有界提交回执和取消审计一同原子发布；v8 增加管理员放弃审计，仍可读取 v1～v7。 */
-record WorldMetadata(String worldId, String name, String createdAt, State state, List<Cancellation> cancellations, List<Commit> commits) {
+/** 所有权、有界提交回执和取消审计一同原子发布；v9 固定世界的登录模式，仍可读取 v1～v8。 */
+record WorldMetadata(String worldId, String name, String createdAt, State state, List<Cancellation> cancellations, List<Commit> commits, boolean allowOfflinePlayers) {
+
+    WorldMetadata(String worldId, String name, String createdAt, State state, List<Cancellation> cancellations, List<Commit> commits) {
+        this(worldId, name, createdAt, state, cancellations, commits, false);
+    }
 
     WorldMetadata(String worldId, String name, String createdAt, State state, List<Cancellation> cancellations) {
         this(worldId, name, createdAt, state, cancellations, List.of());
@@ -150,24 +154,19 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
     }
 
     WorldMetadata withState(State next) {
-        return new WorldMetadata(worldId, name, createdAt, next, cancellations, commits);
+        return new WorldMetadata(worldId, name, createdAt, next, cancellations, commits, allowOfflinePlayers);
     }
 
     WorldMetadata withHistory(List<Cancellation> retainedCancellations, List<Commit> retainedCommits) {
-        return new WorldMetadata(worldId, name, createdAt, state, retainedCancellations, retainedCommits);
+        return new WorldMetadata(worldId, name, createdAt, state, retainedCancellations, retainedCommits, allowOfflinePlayers);
     }
 
     String toJson() {
-        int format = 2;
-        if (!cancellations.isEmpty()) format = 3;
-        if (!commits.isEmpty()) format = 4;
-        if (commits.stream().anyMatch(commit -> commit.committedAt != null)) format = 5;
-        if (!commits.isEmpty() && commits.getFirst().version() > 1) format = 6;
-        if (commits.stream().anyMatch(commit -> commit.restoredFromVersion != null)) format = 7;
-        if (cancellations.stream().anyMatch(cancellation -> cancellation.abandonId != null)) format = 8;
+        int format = 9;
         JsonWriter writer = new JsonWriter().beginObject().name("formatVersion")
             .value(format)
             .name("worldId").value(worldId).name("name").value(name).name("createdAt").value(createdAt)
+            .name("allowOfflinePlayers").value(allowOfflinePlayers)
             .name("state").beginObject().name("epoch").value(state.epoch)
             .name("phase").value(state.phase.name()).name("owner");
         if (state.owner == null) writer.nullValue();
@@ -187,43 +186,39 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
         if (state.endpoint == null) writer.nullValue();
         else state.endpoint.writeJson(writer);
         writer.endObject();
-        if (!cancellations.isEmpty() || !commits.isEmpty()) {
-            writer.name("cancellations").beginArray();
-            for (Cancellation cancellation : cancellations) {
-                Owner owner = cancellation.owner;
-                writer.beginObject().name("username").value(owner.username).name("deviceId").value(owner.deviceId)
-                    .name("sessionId").value(owner.sessionId).name("requestId").value(owner.requestId)
-                    .name("epoch").value(cancellation.epoch).name("cancelledAt").value(cancellation.cancelledAt);
-                if (cancellation.abandonId != null) {
-                    writer.name("abandonId").value(cancellation.abandonId).name("actor").value("local-admin").name("committedVersion");
-                    if (cancellation.committedVersion == null) writer.nullValue();
-                    else writer.value(cancellation.committedVersion);
-                    writer.name("lastCommittedAt");
-                    if (cancellation.lastCommittedAt == null) writer.nullValue();
-                    else writer.value(cancellation.lastCommittedAt);
-                    writer.name("phase").value(cancellation.phase.name()).name("reason").value(cancellation.reason);
-                }
-                writer.endObject();
+        writer.name("cancellations").beginArray();
+        for (Cancellation cancellation : cancellations) {
+            Owner owner = cancellation.owner;
+            writer.beginObject().name("username").value(owner.username).name("deviceId").value(owner.deviceId)
+                .name("sessionId").value(owner.sessionId).name("requestId").value(owner.requestId)
+                .name("epoch").value(cancellation.epoch).name("cancelledAt").value(cancellation.cancelledAt);
+            if (cancellation.abandonId != null) {
+                writer.name("abandonId").value(cancellation.abandonId).name("actor").value("local-admin").name("committedVersion");
+                if (cancellation.committedVersion == null) writer.nullValue();
+                else writer.value(cancellation.committedVersion);
+                writer.name("lastCommittedAt");
+                if (cancellation.lastCommittedAt == null) writer.nullValue();
+                else writer.value(cancellation.lastCommittedAt);
+                writer.name("phase").value(cancellation.phase.name()).name("reason").value(cancellation.reason);
             }
-            writer.endArray();
+            writer.endObject();
         }
-        if (!commits.isEmpty() || format == 8) {
-            writer.name("commits").beginArray();
-            for (Commit commit : commits) {
-                Owner owner = commit.owner;
-                writer.beginObject().name("uploadId").value(commit.uploadId).name("owner").beginObject()
-                    .name("username").value(owner.username).name("deviceId").value(owner.deviceId)
-                    .name("sessionId").value(owner.sessionId).name("requestId").value(owner.requestId).endObject()
-                    .name("epoch").value(commit.epoch).name("baseVersion");
-                if (commit.baseVersion == null) writer.nullValue();
-                else writer.value(commit.baseVersion);
-                writer.name("version").value(commit.version).name("manifestHash").value(commit.manifestHash);
-                if (commit.committedAt != null) writer.name("committedAt").value(commit.committedAt);
-                if (commit.restoredFromVersion != null) writer.name("restoredFromVersion").value(commit.restoredFromVersion);
-                writer.endObject();
-            }
-            writer.endArray();
+        writer.endArray();
+        writer.name("commits").beginArray();
+        for (Commit commit : commits) {
+            Owner owner = commit.owner;
+            writer.beginObject().name("uploadId").value(commit.uploadId).name("owner").beginObject()
+                .name("username").value(owner.username).name("deviceId").value(owner.deviceId)
+                .name("sessionId").value(owner.sessionId).name("requestId").value(owner.requestId).endObject()
+                .name("epoch").value(commit.epoch).name("baseVersion");
+            if (commit.baseVersion == null) writer.nullValue();
+            else writer.value(commit.baseVersion);
+            writer.name("version").value(commit.version).name("manifestHash").value(commit.manifestHash);
+            if (commit.committedAt != null) writer.name("committedAt").value(commit.committedAt);
+            if (commit.restoredFromVersion != null) writer.name("restoredFromVersion").value(commit.restoredFromVersion);
+            writer.endObject();
         }
+        writer.endArray();
         return writer.endObject().finish();
     }
 
@@ -231,6 +226,7 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
         JsonReader reader = new JsonReader(json, WorldStore.MAX_METADATA_BYTES, 5);
         Set<String> fields = new HashSet<>();
         int format = 0;
+        boolean allowOfflinePlayers = false;
         String id = null, name = null, createdAt = null;
         State state = null;
         List<Cancellation> cancellations = new ArrayList<>();
@@ -244,6 +240,7 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
                 case "worldId" -> id = reader.nextString();
                 case "name" -> name = reader.nextString();
                 case "createdAt" -> createdAt = reader.nextString();
+                case "allowOfflinePlayers" -> allowOfflinePlayers = reader.nextBoolean();
                 case "state" -> state = readState(reader);
                 case "cancellations" -> {
                     reader.beginArray();
@@ -278,8 +275,10 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
             if (format < 6 && commits.getFirst().version() != 1) throw new IllegalArgumentException("Incomplete legacy commit history");
             if (format == 8 && cancellations.stream().noneMatch(cancellation -> cancellation.abandonId != null))
                 throw new IllegalArgumentException("Missing abandonment audit");
+        } else if (format == 9) {
+            requireFields(fields, Set.of("formatVersion", "worldId", "name", "createdAt", "state", "cancellations", "commits", "allowOfflinePlayers"));
         } else throw new IllegalArgumentException("Unsupported world metadata version");
-        return new WorldMetadata(id, name, createdAt, state, cancellations, commits);
+        return new WorldMetadata(id, name, createdAt, state, cancellations, commits, allowOfflinePlayers);
     }
 
     private static Commit readCommit(JsonReader reader) {

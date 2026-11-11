@@ -31,6 +31,7 @@ public final class WorldAdministration {
         var metadata = entry.metadata();
         var state = metadata.state();
         writer.beginObject().name("worldId").value(metadata.worldId()).name("name").value(metadata.name())
+            .name("allowOfflinePlayers").value(metadata.allowOfflinePlayers())
             .name("createdAt").value(metadata.createdAt()).name("phase").value(state.phase().name())
             .name("status").value(entry.status()).name("epoch").value(state.epoch())
             .name("online").value(entry.online()).name("unavailable").value(entry.unavailable())

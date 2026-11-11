@@ -48,6 +48,8 @@ func (m model) pageTitle() string {
 		return "备份 / " + clean(text(m.world, "name"))
 	case historyScreen:
 		return "历史 / " + clean(text(m.world, "name"))
+	case worldModeScreen:
+		return "创建共享世界 / 登录模式"
 	case formScreen:
 		return m.form.title
 	case confirmScreen:
@@ -200,7 +202,7 @@ func progress(used, total int64, width int) string {
 func (m model) worldDetail(w, tasks object) string {
 	width := m.bodyWidth()
 	owner := obj(w, "owner")
-	basic := []string{field("世界名称", text(w, "name")), field("世界 ID", text(w, "worldId")), field("状态", phase(text(w, "status"))+" · 玩家 "+text(w, "playerCount")), field("权威 / 基础版本", text(w, "committedVersion")+" / "+text(w, "baseVersion")), field("最近提交", localTime(text(w, "lastCommittedAt")))}
+	basic := []string{field("世界名称", text(w, "name")), field("登录模式", worldLoginMode(w)), field("世界 ID", text(w, "worldId")), field("状态", phase(text(w, "status"))+" · 玩家 "+text(w, "playerCount")), field("权威 / 基础版本", text(w, "committedVersion")+" / "+text(w, "baseVersion")), field("最近提交", localTime(text(w, "lastCommittedAt")))}
 	ownership := []string{metric("持有者", text(owner, "username")), metric("当前任期", text(w, "epoch")), metric("持久阶段", text(w, "phase")), metric("最近联系", localTime(text(w, "lastContactAt")))}
 	status := []string{metric("在线", text(w, "online")), metric("存储不可用", text(w, "unavailable")), metric("正在恢复", text(w, "restoring"))}
 	if tasks != nil {
@@ -274,6 +276,9 @@ func (m model) content() string {
 			content += "\n" + borderStyle.Render(strings.Repeat("─", width)) + "\n" + fit(field("所选时间", localTime(text(e, "at"))), width) + "\n" + fit(field("版本 / 来源", text(e, "version")+" / "+text(e, "sourceVersion")), width) + "\n" + fit(field("原因", text(e, "reason")), width)
 		}
 		return content
+	case worldModeScreen:
+		return card("世界名称", width, []string{clean(m.newWorldName)}, 0) + "\n" + card("登录模式 · 创建后不可修改", width,
+			[]string{"仅允许正版账号：使用正版身份验证。", "允许离线账号：所有玩家统一使用离线身份，房主交接时保持玩家数据一致。", "两种模式都需要 WorldRelay 账户和 Token。", "请在下方选择模式并按 Enter 创建世界。"}, 0)
 	case formScreen:
 		return card("输入说明", width, []string{m.form.hint}, 0)
 	case confirmScreen:

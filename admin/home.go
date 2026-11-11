@@ -64,6 +64,9 @@ func (m *model) homeKey(key string) (tea.Cmd, bool) {
 }
 
 func (m model) parentScreen() screen {
+	if m.screen == worldModeScreen {
+		return worldsScreen
+	}
 	switch m.screen {
 	case detailScreen:
 		return worldsScreen

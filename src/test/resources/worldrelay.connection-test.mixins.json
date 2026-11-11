@@ -4,7 +4,8 @@
   "plugin": "top.kmar.mc.worldreplay.test.ClientConnectionMixinPlugin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
-    "SharedAddressResolverMixin"
+    "SharedAddressResolverMixin",
+    "SharedPublishMixin"
   ],
   "injectors": {"defaultRequire": 1}
 }

@@ -31,15 +31,20 @@ public final class WorldCreateHandler implements HttpHandler {
             HttpResponses.error(exchange, 413, "PAYLOAD_TOO_LARGE", "World creation body exceeds 4096 bytes");
             return;
         }
-        String name;
+        String name = null;
+        boolean allowOfflinePlayers = false;
         try {
             String json = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(body)).toString();
             JsonReader reader = new JsonReader(json, MAX_BODY_BYTES, 4);
             reader.beginObject();
-            if (!reader.nextName().equals("name")) {
-                throw new IllegalArgumentException("Expected name");
+            while (reader.hasNext()) {
+                switch (reader.nextName()) {
+                    case "name" -> name = reader.nextString();
+                    case "allowOfflinePlayers" -> allowOfflinePlayers = reader.nextBoolean();
+                    default -> throw new IllegalArgumentException("Unknown world field");
+                }
             }
-            name = reader.nextString();
+            if (name == null) throw new IllegalArgumentException("Missing name");
             reader.endObject();
             reader.finish();
             WorldStore.validateName(name);
@@ -47,7 +52,7 @@ public final class WorldCreateHandler implements HttpHandler {
             HttpResponses.error(exchange, 400, "INVALID_WORLD", "Expected a valid world name");
             return;
         }
-        var world = worlds.create(name);
+        var world = worlds.create(name, allowOfflinePlayers);
         if (world == null) {
             HttpResponses.error(exchange, 409, "WORLD_NAME_EXISTS", "World name already exists");
             return;

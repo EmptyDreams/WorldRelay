@@ -425,7 +425,8 @@ func TestWorldAndUserManagement(t *testing.T) {
 	m := newModel(c, journal{t.TempDir()}, 0)
 	goToPage(t, m, worldsScreen)
 	chooseWorldAction(t, m, "create")
-	complete(t, m, submitValue(t, m, "新世界"))
+	submitValue(t, m, "新世界")
+	complete(t, m, key(m, "enter"))
 	goToPage(t, m, worldsScreen)
 	chooseWorldAction(t, m, "rename")
 	complete(t, m, submitValue(t, m, "新名"))
@@ -457,6 +458,9 @@ func TestWorldAndUserManagement(t *testing.T) {
 	paths := map[string]int{}
 	for _, r := range f.requests {
 		paths[r.path]++
+		if r.path == "worlds" && r.body != nil && (r.body["name"] != "新世界" || r.body["allowOfflinePlayers"] != false) {
+			t.Fatal("创建世界没有提交默认正版模式")
+		}
 		if r.path == "worlds/rename" && (r.body["expectedName"] != "旧名" || r.body["name"] != "新名") {
 			t.Fatal("改名缺少原名称约束")
 		}

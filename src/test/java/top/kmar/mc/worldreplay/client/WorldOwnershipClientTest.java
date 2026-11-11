@@ -41,6 +41,15 @@ class WorldOwnershipClientTest {
             + "\"committedVersion\":null,\"heartbeatIntervalSeconds\":10,\"heartbeatTimeoutSeconds\":30}";
     }
 
+    /** 获取所有权响应提供创建时固定的登录模式，供房主初始化内置服务器使用。 */
+    @Test
+    void readsFixedLoginModeFromAcquiredOwnership() throws Exception {
+        String body = response().replace("\"hasSave\":false", "\"hasSave\":false,\"allowOfflinePlayers\":true");
+        assertTrue(WorldOwnershipClient.parse(body).allowOfflinePlayers());
+        assertFalse(WorldOwnershipClient.parse(body.replace("\"allowOfflinePlayers\":true", "\"allowOfflinePlayers\":false")).allowOfflinePlayers());
+        assertThrows(IOException.class, () -> WorldOwnershipClient.parse(body.replace("\"allowOfflinePlayers\":true", "\"allowOfflinePlayers\":1")));
+    }
+
     /** 获取失败重试保持请求标识，取消成功但响应失败后重试仍使用原持有关系。 */
     @Test
     void retriesReuseAcquisitionAndCancellationIdentity() throws Exception {

@@ -218,7 +218,15 @@ func TestRealServerManagement(t *testing.T) {
 	}
 	goToPage(t, m, worldsScreen)
 	chooseWorldAction(t, m, "create")
-	complete(t, m, submitValue(t, m, "终端测试世界"))
+	submitValue(t, m, "终端测试世界")
+	if m.screen != worldModeScreen {
+		t.Fatal("未进入世界登录模式选择")
+	}
+	key(m, "right")
+	complete(t, m, key(m, "enter"))
+	if !flagValue(m.result, "allowOfflinePlayers") {
+		t.Fatal("未创建允许离线账号的世界")
+	}
 	world := text(m.result, "worldId")
 	goToPage(t, m, worldsScreen)
 	chooseWorldAction(t, m, "rename")
@@ -227,7 +235,7 @@ func TestRealServerManagement(t *testing.T) {
 		t.Fatal("改名后没有直接返回世界列表")
 	}
 	goToPage(t, m, worldsScreen)
-	if text(m.world, "name") != "改名后的世界" {
+	if text(m.world, "name") != "改名后的世界" || !flagValue(m.world, "allowOfflinePlayers") {
 		t.Fatal("真实改名未生效")
 	}
 	// 业务获取响应不回传 deviceId，使用请求中同一设备标识构造后续命令。

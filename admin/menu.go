@@ -34,6 +34,8 @@ func (m model) menuItems() []menuItem {
 			label = "禁用账户"
 		}
 		return []menuItem{item("创建账户", "create-user", ready), item(label, "toggle-user", ready && len(m.users) > 0), item("重置 Token", "reset-token", ready && len(m.users) > 0), item("刷新", "refresh", ready), item("返回", "back", true)}
+	case worldModeScreen:
+		return []menuItem{item("仅允许正版账号", "create-online-world", ready), item("允许离线账号", "create-offline-world", ready)}
 	case formScreen, confirmScreen:
 		return nil
 	case resultScreen:
@@ -147,6 +149,13 @@ func (m *model) pageMenuKey(key string) tea.Cmd {
 }
 
 func (m *model) returnToParent() tea.Cmd {
+	if m.screen == worldModeScreen {
+		if m.busy {
+			return nil
+		}
+		m.screen = worldsScreen
+		return m.openForm("create-world", "创建共享世界", "输入世界名称；首次房主仍在 Minecraft 内创建实际存档。", m.newWorldName)
+	}
 	if m.screen == formScreen || m.screen == confirmScreen {
 		if m.busy {
 			return nil
@@ -164,6 +173,10 @@ func (m *model) returnToParent() tea.Cmd {
 
 func (m *model) performMenuAction(action string) tea.Cmd {
 	switch action {
+	case "create-online-world", "create-offline-world":
+		if !m.busy {
+			return m.request("worlds", object{"name": m.newWorldName, "allowOfflinePlayers": action == "create-offline-world"}, "mutation")
+		}
 	case "back":
 		return m.returnToParent()
 	case "refresh":

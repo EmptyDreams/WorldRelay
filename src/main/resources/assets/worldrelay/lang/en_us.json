@@ -115,5 +115,8 @@
   "worldrelay.settings.error.ping_redirect": "Server redirected. Enter the final server address and port. Settings not saved.",
   "worldrelay.settings.error.ping_response_invalid": "Unexpected response. Check the WorldRelay server address. Settings not saved.",
   "worldrelay.disconnect.player_data_confirmation_required": "Your player data is missing from this shared world. Creating new player data requires confirmation.",
-  "worldrelay.disconnect.player_data_unreadable": "Your player data in this shared world cannot be read. Joining was cancelled to protect your progress. See the host's log for details."
+  "worldrelay.disconnect.player_data_unreadable": "Your player data in this shared world cannot be read. Joining was cancelled to protect your progress. See the host's log for details.",
+  "worldrelay.shared_worlds.offline_allowed": "Offline accounts allowed (fixed at creation)",
+  "worldrelay.shared_worlds.online_only": "Online accounts only (fixed at creation)",
+  "worldrelay.creation.online_account_required": "This world requires an online Minecraft account. Sign in before joining."
 }

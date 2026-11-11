@@ -123,3 +123,45 @@ func TestWorldWorkspaceSelectionAndBackupActions(t *testing.T) {
 		}
 	}
 }
+
+// 验证创建世界默认仅正版，可用左右键选择离线模式，服务端收到模式，详情只展示不可修改的属性。
+func TestWorldCreationLoginModeSelection(t *testing.T) {
+	for _, offline := range []bool{false, true} {
+		writes := 0
+		w := object{"worldId": "test", "name": "测试世界", "status": "FREE", "allowOfflinePlayers": offline}
+		c, _ := testClient(t, func(path string, body object) (int, object) {
+			if path != "worlds" || body["name"] != "测试世界" || body["allowOfflinePlayers"] != offline {
+				t.Fatal("创建请求未发送所选模式和世界名称")
+			}
+			writes++
+			return 201, w
+		})
+		m := newModel(c, journal{t.TempDir()}, 0)
+		m.screen = worldsScreen
+		chooseWorldAction(t, m, "create")
+		m.input.SetValue("测试世界")
+		if cmd := m.submit(); cmd != nil || m.screen != worldModeScreen || writes != 0 {
+			t.Fatal("名称提交后未进入模式选择")
+		}
+		if m.menuIndex() != 0 || !strings.Contains(ansi.Strip(m.View()), "创建后不可修改") {
+			t.Fatal("未默认选择正版或缺少固定模式说明")
+		}
+		key(m, "esc")
+		if m.screen != formScreen || m.input.Value() != "测试世界" || writes != 0 {
+			t.Fatal("返回名称输入时未保留内容或提前发送创建请求")
+		}
+		submitValue(t, m, "测试世界")
+		if offline {
+			key(m, "d")
+		}
+		complete(t, m, key(m, "enter"))
+		if writes != 1 || m.resultBack != worldsScreen {
+			t.Fatal("创建未完成或未保留世界列表返回入口")
+		}
+		m.screen, m.world, m.worlds = worldsScreen, w, []object{w}
+		lines, _ := m.worldDetailLines(80)
+		if !strings.Contains(strings.Join(lines, "\n"), worldLoginMode(w)) {
+			t.Fatal("详情未展示固定模式")
+		}
+	}
+}

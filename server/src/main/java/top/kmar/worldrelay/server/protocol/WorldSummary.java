@@ -10,7 +10,8 @@ public record WorldSummary(
     String hostName,
     Integer playerCount,
     String lastCommittedAt,
-    HostEndpoint endpoint
+    HostEndpoint endpoint,
+    boolean allowOfflinePlayers
 ) {
 
     /** 在已有 Writer 中写入一个完整摘要对象，由外层负责结束整个 JSON 文档。 */
@@ -18,6 +19,7 @@ public record WorldSummary(
         writer.beginObject()
             .name("worldId").value(worldId)
             .name("name").value(name)
+            .name("allowOfflinePlayers").value(allowOfflinePlayers)
             .name("status").value(status)
             .name("hostName");
         if (hostName == null) {

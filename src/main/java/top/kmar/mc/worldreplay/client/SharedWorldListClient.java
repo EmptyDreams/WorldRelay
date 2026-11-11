@@ -63,7 +63,8 @@ final class SharedWorldListClient {
                     throw new IllegalArgumentException();
                 }
                 result.add(new Summary(id, name, status, host.isJsonNull() ? null : ClientJson.requiredString(world, "hostName"),
-                    players, lastCommittedAt.isJsonNull() ? null : ClientJson.requiredString(world, "lastCommittedAt")));
+                    players, lastCommittedAt.isJsonNull() ? null : ClientJson.requiredString(world, "lastCommittedAt"),
+                    ClientJson.optionalBoolean(world, "allowOfflinePlayers")));
             }
             return List.copyOf(result);
         } catch (RuntimeException e) {
@@ -72,7 +73,7 @@ final class SharedWorldListClient {
     }
 
     record Summary(String worldId, String name, String status, String hostName, Integer playerCount,
-                   String lastCommittedAt) {
+                   String lastCommittedAt, boolean allowOfflinePlayers) {
 
     }
 

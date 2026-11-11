@@ -231,7 +231,7 @@ public final class WorldStore implements AutoCloseable {
         if (names.contains(name)) throw conflict("WORLD_NAME_EXISTS", "World name already exists");
         var old = entry.metadata;
         try {
-            persist(entry, new WorldMetadata(worldId, name, old.createdAt(), old.state(), old.cancellations(), old.commits()));
+            persist(entry, new WorldMetadata(worldId, name, old.createdAt(), old.state(), old.cancellations(), old.commits(), old.allowOfflinePlayers()));
         } catch (IOException | RuntimeException | Error failure) {
             if (entry.unavailable) names.add(name); // 不确定是否发布成功时，两种名称都不能分配给另一世界。
             throw failure;
@@ -317,6 +317,11 @@ public final class WorldStore implements AutoCloseable {
 
     /** 创建、原子发布和内存更新在同一个同步边界中。 */
     public synchronized WorldSummary create(String name) throws IOException {
+        return create(name, false);
+    }
+
+    /** 登录模式只在登记时指定，之后的状态、版本变更均保留该值。 */
+    public synchronized WorldSummary create(String name, boolean allowOfflinePlayers) throws IOException {
         ensureOpen();
         validateName(name);
         if (names.contains(name)) return null;
@@ -325,7 +330,7 @@ public final class WorldStore implements AutoCloseable {
             id = idGenerator.get().toString();
         }
         while (worlds.containsKey(id) || Files.exists(root.resolve(id), LinkOption.NOFOLLOW_LINKS));
-        Entry entry = new Entry(new WorldMetadata(id, name, Instant.now().toString(), WorldMetadata.State.free()));
+        Entry entry = new Entry(new WorldMetadata(id, name, Instant.now().toString(), WorldMetadata.State.free(), List.of(), List.of(), allowOfflinePlayers));
         Path temporary = Files.createTempDirectory(root, ".creating-");
         try {
             writeForced(temporary.resolve("world.json"), entry.metadata.toJson(), StandardOpenOption.CREATE_NEW);
@@ -431,7 +436,7 @@ public final class WorldStore implements AutoCloseable {
         var history = new ArrayList<>(entry.metadata.cancellations());
         history.add(new WorldMetadata.Cancellation(state.owner(), state.epoch(), Instant.now().toString()));
         var free = new WorldMetadata.State(state.epoch() + 1, WorldPhase.FREE, null, null, null, null, null);
-        persist(entry, new WorldMetadata(entry.metadata.worldId(), entry.metadata.name(), entry.metadata.createdAt(), free, history));
+        persist(entry, new WorldMetadata(entry.metadata.worldId(), entry.metadata.name(), entry.metadata.createdAt(), free, history, entry.metadata.commits(), entry.metadata.allowOfflinePlayers()));
         entry.seen = false;
         entry.joinReady = false;
         entry.players = null;
@@ -472,7 +477,7 @@ public final class WorldStore implements AutoCloseable {
         var free = new WorldMetadata.State(Math.addExact(state.epoch(), 1), WorldPhase.FREE, null, null,
             state.committedVersion(), state.lastCommittedAt(), null);
         persist(entry, new WorldMetadata(entry.metadata.worldId(), entry.metadata.name(), entry.metadata.createdAt(), free,
-            history, entry.metadata.commits()));
+            history, entry.metadata.commits(), entry.metadata.allowOfflinePlayers()));
         entry.seen = false;
         entry.joinReady = false;
         entry.players = null;
@@ -699,7 +704,7 @@ public final class WorldStore implements AutoCloseable {
             request.manifestHash(), at, request.backupVersion()));
         var free = new WorldMetadata.State(epoch, WorldPhase.FREE, null, null, version, at, null);
         var next = boundedMetadata(new WorldMetadata(request.worldId(), entry.metadata.name(), entry.metadata.createdAt(),
-            free, entry.metadata.cancellations(), commits));
+            free, entry.metadata.cancellations(), commits, entry.metadata.allowOfflinePlayers()));
         Path world = root.resolve(request.worldId());
         if (!candidate.getParent().getParent().equals(world) || !candidate.getParent().getFileName().toString().startsWith(".candidate-"))
             throw new IOException("Restore candidate must be private to world store");
@@ -843,7 +848,7 @@ public final class WorldStore implements AutoCloseable {
         String committedAt = clock.instant().toString();
         commits.add(new WorldMetadata.Commit(uploadId, state.owner(), state.epoch(), baseVersion, version, hash, committedAt));
         var free = new WorldMetadata.State(state.epoch(), WorldPhase.FREE, null, null, version, committedAt, null);
-        var next = new WorldMetadata(worldId, entry.metadata.name(), entry.metadata.createdAt(), free, entry.metadata.cancellations(), commits);
+        var next = new WorldMetadata(worldId, entry.metadata.name(), entry.metadata.createdAt(), free, entry.metadata.cancellations(), commits, entry.metadata.allowOfflinePlayers());
         // 先淘汰超出容量的旧历史，再移动候选；备份的最小索引必须先落盘。
         next = boundedMetadata(next);
         Path world = root.resolve(worldId);
@@ -928,7 +933,7 @@ public final class WorldStore implements AutoCloseable {
         return new WorldSummary(metadata.worldId(), metadata.name(), status,
             state.owner() == null ? null : state.owner().username(),
             state.owner() == null && !entry.unavailable ? Integer.valueOf(0) : entry.players, state.lastCommittedAt(),
-            status.equals("RUNNING") ? state.endpoint() : null);
+            status.equals("RUNNING") ? state.endpoint() : null, metadata.allowOfflinePlayers());
     }
 
     private OwnershipView view(Entry entry) {
@@ -936,7 +941,7 @@ public final class WorldStore implements AutoCloseable {
         String status = status(entry);
         return new OwnershipView(entry.metadata.worldId(), state.epoch(), state.owner().sessionId(), state.phase(), status,
             state.baseVersion(), state.committedVersion(), status.equals("RUNNING") ? state.endpoint() : null,
-            heartbeatIntervalSeconds, heartbeatTimeoutSeconds);
+            heartbeatIntervalSeconds, heartbeatTimeoutSeconds, entry.metadata.allowOfflinePlayers());
     }
 
     private void persist(Entry entry, WorldMetadata.State state) throws IOException {

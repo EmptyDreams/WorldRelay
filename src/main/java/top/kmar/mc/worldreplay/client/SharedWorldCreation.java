@@ -66,6 +66,8 @@ public final class SharedWorldCreation {
         show(parent, "acquiring", true, null);
         String user = client.getUser().getName();
         UUID profile = client.getUser().getProfileId();
+        boolean offlineAccount = client.getUser().getType() == net.minecraft.client.User.Type.LEGACY
+            || client.getUser().getAccessToken().isBlank() || client.getUser().getAccessToken().equals("0");
         Path game = client.gameDirectory.toPath();
         IO.execute(() -> {
             ClientConnectionSettings settings = null;
@@ -81,6 +83,16 @@ public final class SharedWorldCreation {
                 if (session != null && session.stage() == LocalWorldSession.Stage.COMMITTED) store.cleanupAfterCheckpoint();
                 boolean ownedSession = session != null && session.sessionId() != null
                     && session.stage() != LocalWorldSession.Stage.CANCELLED && session.stage() != LocalWorldSession.Stage.COMMITTED;
+                // 已停止会话仍允许补传；账号限制只影响进入游戏，不阻止保存进度。
+                if (!current.allowOfflinePlayers() && offlineAccount && (session == null
+                    || session.stage() != LocalWorldSession.Stage.STOPPED && session.stage() != LocalWorldSession.Stage.UPLOADING
+                    && session.stage() != LocalWorldSession.Stage.CANCELLING)) {
+                    client.execute(() -> {
+                        joining = false;
+                        show(parent, "online_account_required", false, null);
+                    });
+                    return;
+                }
                 if (ownedSession && session.stage() != LocalWorldSession.Stage.UPLOADING && session.stage() != LocalWorldSession.Stage.CANCELLING) {
                     // 旧获取请求的去重记录可能已淘汰；先检查持有关系，不能用旧请求重新获得所有权。
                     WorldOwnershipClient.command(settings, user, session, "heartbeat", null);
@@ -102,7 +114,7 @@ public final class SharedWorldCreation {
                     store.write(session); // 响应丢失时用同一个 requestId 恢复，绝不重新抢锁。
                 }
                 if (session.stage() == LocalWorldSession.Stage.STOPPED || session.stage() == LocalWorldSession.Stage.UPLOADING) {
-                    var creation = new Creation(parent, user, profile, settings, store, session);
+                    var creation = new Creation(parent, user, profile, settings, store, session, current.allowOfflinePlayers());
                     if (active != null) active.stopHeartbeat();
                     active = creation;
                     creation.worldDirectory = store.saves(session.epoch()).resolve(session.folder());
@@ -117,7 +129,7 @@ public final class SharedWorldCreation {
                     client.execute(() -> show(parent, "recovering", true, null));
                     try {
                         var prepared = SharedWorldRecovery.prepare(settings, user, session, store);
-                        var creation = new Creation(parent, user, profile, settings, store, session);
+                        var creation = new Creation(parent, user, profile, settings, store, session, current.allowOfflinePlayers());
                         creation.worldDirectory = prepared.directory();
                         creation.storage = LevelStorageSource.createDefault(store.saves(session.epoch()));
                         creation.confirmPlayerData();
@@ -155,7 +167,7 @@ public final class SharedWorldCreation {
                 }
                 if (session.stage() == LocalWorldSession.Stage.CANCELLING) {
                     // 上次取消可能已在服务端成功；直接重试取消，不能先 acquire 已撤销的请求。
-                    var creation = new Creation(parent, user, profile, settings, store, session);
+                    var creation = new Creation(parent, user, profile, settings, store, session, current.allowOfflinePlayers());
                     if (active != null) active.stopHeartbeat();
                     active = creation;
                     client.execute(() -> {
@@ -188,7 +200,7 @@ public final class SharedWorldCreation {
                 if (session.stage() != LocalWorldSession.Stage.DOWNLOADING) session = LocalWorldReplacement.acceptOwnership(session, view);
                 else view.checkSession(session);
                 store.write(session);
-                var creation = new Creation(parent, user, profile, settings, store, session);
+                var creation = new Creation(parent, user, profile, settings, store, session, view.allowOfflinePlayers());
                 Creation previous = active;
                 if (previous != null) previous.stopHeartbeat();
                 active = creation;
@@ -321,6 +333,7 @@ public final class SharedWorldCreation {
         private final Screen parent;
         private final String user;
         private final UUID profile;
+        private final boolean allowOfflinePlayers;
         private final ClientConnectionSettings settings;
         private final LocalWorldSessionStore store;
         // 仅由单线程 IO 队列更新，volatile 将最新状态发布给客户端主线程。
@@ -343,11 +356,12 @@ public final class SharedWorldCreation {
 
         private Creation(
             Screen parent, String user, UUID profile, ClientConnectionSettings settings,
-            LocalWorldSessionStore store, LocalWorldSession session
+            LocalWorldSessionStore store, LocalWorldSession session, boolean allowOfflinePlayers
         ) {
             this.parent = parent;
             this.user = user;
-            this.profile = profile;
+            this.profile = SharedWorldLoginPolicy.playerId(user, profile, allowOfflinePlayers);
+            this.allowOfflinePlayers = allowOfflinePlayers;
             this.settings = settings;
             this.store = store;
             this.session = session;
@@ -668,6 +682,11 @@ public final class SharedWorldCreation {
         Creation creation = active;
         return creation != null && creation.worldDirectory != null
             && server.getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize().equals(creation.worldDirectory) ? creation : null;
+    }
+
+    public static boolean allowsOfflinePlayers(MinecraftServer server) {
+        Creation creation = matching(server);
+        return creation != null && creation.allowOfflinePlayers;
     }
 
     public static boolean managed(MinecraftServer server) {

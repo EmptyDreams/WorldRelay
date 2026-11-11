@@ -276,7 +276,7 @@ func (m model) worldDetailLines(width int) ([]string, []int) {
 	heading("世界信息")
 	for _, item := range []struct{ label, value string }{
 		{"世界名称", text(w, "name")}, {"ID", text(w, "worldId")}, {"状态", phase(text(w, "status"))},
-		{"最近提交", localTime(text(w, "lastCommittedAt"))}, {"持有者", text(obj(w, "owner"), "username")},
+		{"登录模式", worldLoginMode(w)}, {"最近提交", localTime(text(w, "lastCommittedAt"))}, {"持有者", text(obj(w, "owner"), "username")},
 		{"上一持有者", text(w, "previousOwner")}, {"是否在线", text(w, "online")},
 	} {
 		if item.label == "ID" && lipgloss.Width(item.value)+13 > width {
@@ -378,4 +378,12 @@ func (m model) worldWorkspace() string {
 		return list
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, list, " ", detail)
+}
+
+// 登录模式在世界创建时固定；旧世界默认使用正版验证。
+func worldLoginMode(w object) string {
+	if flagValue(w, "allowOfflinePlayers") {
+		return "允许离线账号（不可修改）"
+	}
+	return "仅允许正版账号（不可修改）"
 }

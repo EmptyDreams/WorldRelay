@@ -40,7 +40,7 @@ final class WorldOwnershipClient {
     private static final Set<String> PHASES = Set.of("PREPARING", "STARTING", "RUNNING", "STOPPING", "COMMITTING");
 
     record View(String worldId, long epoch, String sessionId, String phase, boolean hasSave,
-                Long baseVersion, Long committedVersion, int heartbeatIntervalSeconds) {
+                Long baseVersion, Long committedVersion, int heartbeatIntervalSeconds, boolean allowOfflinePlayers) {
 
         void checkSession(LocalWorldSession session) throws IOException {
             if (!worldId.equals(session.worldId()) || (session.sessionId() != null
@@ -220,7 +220,7 @@ final class WorldOwnershipClient {
             int interval = Math.toIntExact(positiveLong(body, "heartbeatIntervalSeconds"));
             long timeout = positiveLong(body, "heartbeatTimeoutSeconds");
             if (timeout <= interval) throw new IllegalArgumentException();
-            return new View(world, epoch, session, phase, hasSave, base, committed, interval);
+            return new View(world, epoch, session, phase, hasSave, base, committed, interval, ClientJson.optionalBoolean(body, "allowOfflinePlayers"));
         } catch (RuntimeException failure) {
             throw new IOException("Invalid ownership response");
         }
