@@ -1,6 +1,7 @@
 """使用伪终端和隔离 HTTP 夹具验证实际 Linux 可执行程序；仅构建测试需要 Python。"""
 
 import argparse
+import errno
 import fcntl
 import json
 import os
@@ -21,7 +22,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("executable", type=Path)
     args = parser.parse_args()
-    worlds = [{"worldId": "pty-world", "name": "PTY世界", "status": "FREE"}]
+    worlds = [{"worldId": "pty-world", "name": "PTY世界", "status": "FREE", "allowOfflinePlayers": False}]
     created = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -53,8 +54,12 @@ def main():
             if self.path != "/api/v1/worlds":
                 self.respond({"code": "UNEXPECTED_PATH"}, 400)
                 return
+            if set(request) != {"name", "allowOfflinePlayers"} or type(request["allowOfflinePlayers"]) is not bool:
+                self.respond({"code": "INVALID_WORLD"}, 400)
+                return
             created.append(request)
-            world = {"worldId": "created-world", "name": request["name"], "status": "FREE"}
+            world = {"worldId": f"created-world-{len(created)}", "name": request["name"], "status": "FREE",
+                     "allowOfflinePlayers": request["allowOfflinePlayers"]}
             worlds.append(world)
             self.respond(world, 201)
 
@@ -77,14 +82,26 @@ def main():
             os.close(slave)
             captured = bytearray()
 
+            def terminal_failure(message):
+                recent = captured[-12000:].decode("utf-8", errors="replace")
+                recent = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", recent)
+                return RuntimeError(f"{message}; exit status: {process.poll()}; recent terminal output: {recent[-4000:]!r}")
+
             def expect(value, since=None):
                 deadline = time.monotonic() + 10
                 received = bytearray() if since is None else bytearray(captured[since:])
                 while value.encode() not in received:
                     if time.monotonic() > deadline:
-                        raise RuntimeError(f"Terminal did not display {value!r}")
+                        raise terminal_failure(f"Terminal did not display {value!r}")
                     if select.select([master], [], [], 0.1)[0]:
-                        block = os.read(master, 65536)
+                        try:
+                            block = os.read(master, 65536)
+                        except OSError as failure:
+                            if failure.errno != errno.EIO:
+                                raise
+                            raise terminal_failure(f"Terminal closed while waiting for {value!r}") from failure
+                        if not block:
+                            raise terminal_failure(f"Terminal closed while waiting for {value!r}")
                         received.extend(block)
                         captured.extend(block)
 
@@ -130,11 +147,48 @@ def main():
                 right_start = len(captured)
                 os.write(master, b"\x1b[C")
                 expect(f"\x1b[{input_row};14H\x1b[?25h", right_start)
+                # 名称提交后只进入模式选择；ESC 返回保留名称，方向键选择离线模式后才创建。
+                mode_start = len(captured)
                 os.write(master, b"\r")
-                expect("操作成功")
-                assert created == [{"name": "PTY新世界"}]
+                expect("登录模式", mode_start)
+                expect("创建后不可修改", mode_start)
+                expect("▸仅允许正版账号", mode_start)
+                assert not created
+                back_start = len(captured)
                 os.write(master, b"\x1b")
-                expect("PTY新世界")
+                expect("输入说明", back_start)
+                expect("PTY新世界", back_start)
+                mode_start = len(captured)
+                os.write(master, b"\r")
+                expect("▸仅允许正版账号", mode_start)
+                selected_start = len(captured)
+                os.write(master, b"\x1b[C")
+                expect("▸允许离线账号", selected_start)
+                assert not created
+                result_start = len(captured)
+                os.write(master, b"\r")
+                expect("操作成功", result_start)
+                assert created == [{"name": "PTY新世界", "allowOfflinePlayers": True}]
+                list_start = len(captured)
+                os.write(master, b"\x1b")
+                expect("PTY新世界", list_start)
+                # 保留默认正版模式时，回车应明确提交 false，而不是依赖夹具补默认值。
+                form_start = len(captured)
+                os.write(master, b"\r")
+                expect("输入说明", form_start)
+                os.write(master, "PTY正版世界".encode())
+                expect("PTY正版世界")
+                mode_start = len(captured)
+                os.write(master, b"\r")
+                expect("▸仅允许正版账号", mode_start)
+                result_start = len(captured)
+                os.write(master, b"\r")
+                expect("操作成功", result_start)
+                assert created == [{"name": "PTY新世界", "allowOfflinePlayers": True},
+                                   {"name": "PTY正版世界", "allowOfflinePlayers": False}]
+                list_start = len(captured)
+                os.write(master, b"\x1b")
+                expect("PTY正版世界", list_start)
                 os.write(master, b"\x1b")
                 expect("服务概览")
                 os.write(master, b"\x1b[F")
@@ -151,7 +205,7 @@ def main():
                         process.kill()
                         process.wait()
                 os.close(master)
-        print("Terminal smoke passed: read-only check, overview, mouse wheel, cursor navigation, Chinese input, create, ESC return and menu exit")
+        print("Terminal smoke passed: read-only check, overview, mouse wheel, cursor navigation, Chinese input, fixed login modes, ESC return and menu exit")
     finally:
         server.shutdown()
         server.server_close()
