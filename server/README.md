@@ -1,188 +1,158 @@
-# WorldRelay Server
+# WorldRelay 服务端
 
-轻量中心协调服务的 Java 21 模块，与 Minecraft 模组没有代码依赖。
+**一台小服务器保存存档，朋友轮流当房主，同一个世界接着玩。**
 
-当前已实现 HTTP 基础骨架：可配置监听、路由注册、虚拟线程请求执行、并发限制、请求 ID、
-统一错误、请求日志和关闭流程，并提供字符串式 JSON 读写工具。
-生产入口已注册共享世界列表假数据接口，并实现本地注册、用户凭据持久化和统一 Basic 鉴权；
-真实世界协调和存档同步尚未实现。
+服务端提供存档交接、历史备份和连接转发，无需安装 Minecraft 服务端或 Java。
 
-## 启动
+以下命令面向 **Ubuntu 22.04+ / Debian 12+，x64 或 ARM64**，请在 Bash 中执行。先把开头的 `VERSION` 改为包含 `--config` 初始化功能的已发布版本号（不带 `server-v`），部署目录填写新的绝对路径。两种方式都会从同一版本的 Release 下载服务端和管理终端，解压到同一个目录，选一种执行即可。
 
-在仓库根目录执行（需要 JDK 21）：
+## 有 sudo：独立账户，禁用交互登录
 
-```powershell
-.\gradlew.bat :server:run
+使用独立账户，禁用密码登录、交互终端和转发，只接受 WorldRelay 签发的受限传输密钥。账户保留 `/bin/sh`，供 SSH 执行 rsync；直接使用 `nologin` 会使传输也无法运行。[OpenSSH 说明](https://man.openbsd.org/sshd_config#ForceCommand)
+
+部署目录同时作为新账户的主目录，默认 `/home/worldrelay`。SSH 配置保存在部署目录并通过软链接接入系统，systemd 服务文件直接放在 `/etc/systemd/system/`。
+
+请先自行准备 OpenSSH 服务端、systemd、`curl`、`rsync`、`rrsync`、`python3` 和 `nano`。命令会先检查环境，缺少工具时提示并退出。
+
+整段按顺序执行，打开配置编辑器后按需修改，保存退出即启动服务，并启用开机启动：
+
+```bash
+(
+set -euo pipefail
+VERSION="x.y.z"                       # 改为实际 Release 版本号
+SERVICE_USER="worldrelay"             # 新建的专用账户名
+DEPLOY_DIR="/home/$SERVICE_USER"       # 新账户的主目录和部署目录
+REPO="EmptyDreams/WorldRelay"
+
+[[ "$VERSION" != "x.y.z" ]] || { printf '请先填写 VERSION\n' >&2; exit 1; }
+test ! -e "$DEPLOY_DIR"
+case "$(uname -m)" in
+  x86_64) ARCH="x64" ;;
+  aarch64|arm64) ARCH="arm64" ;;
+  *) printf '不支持的 CPU 架构\n' >&2; exit 1 ;;
+esac
+ASSET="worldrelay-server-linux-$ARCH.tar.gz"
+ADMIN_ASSET="worldrelay-admin-linux-$ARCH.tar.gz"
+URL="https://github.com/$REPO/releases/download/server-v$VERSION"
+
+sudo sh -c '
+for tool in curl tar sha256sum rsync rrsync python3 nano systemctl useradd usermod install chown tee ln; do
+  command -v "$tool" >/dev/null || { printf "缺少工具：%s，请先自行安装\n" "$tool" >&2; exit 1; }
+done
+test -x /usr/sbin/sshd || { printf "缺少 OpenSSH 服务端，请先自行安装\n" >&2; exit 1; }
+'
+sudo useradd --system --user-group --home-dir "$DEPLOY_DIR" --shell /bin/sh "$SERVICE_USER"
+sudo usermod --password '*' "$SERVICE_USER"
+sudo install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 755 "$DEPLOY_DIR"
+
+sudo curl -fL "$URL/$ASSET" -o "$DEPLOY_DIR/$ASSET"
+sudo curl -fL "$URL/$ASSET.sha256" -o "$DEPLOY_DIR/$ASSET.sha256"
+sudo curl -fL "$URL/$ADMIN_ASSET" -o "$DEPLOY_DIR/$ADMIN_ASSET"
+sudo curl -fL "$URL/SHA256SUMS" -o "$DEPLOY_DIR/SHA256SUMS"
+cd "$DEPLOY_DIR"
+sudo sha256sum -c "$ASSET.sha256"
+sudo sha256sum --check --ignore-missing SHA256SUMS
+sudo tar --no-same-owner -xzf "$ASSET"
+sudo tar --no-same-owner -xzf "$ADMIN_ASSET" worldrelay-admin
+sudo -H -u "$SERVICE_USER" ./worldrelay-server --config
+sudo install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 700 "$DEPLOY_DIR/state"
+sudo chown root:root "$DEPLOY_DIR"
+
+sudo tee "$DEPLOY_DIR/sshd-worldrelay.conf" >/dev/null <<EOF
+Match User $SERVICE_USER
+    AuthenticationMethods publickey
+    PubkeyAuthentication yes
+    AuthorizedKeysFile .ssh/authorized_keys
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    PermitTTY no
+    DisableForwarding yes
+    PermitUserRC no
+Match all
+EOF
+sudo ln -s "$DEPLOY_DIR/sshd-worldrelay.conf" /etc/ssh/sshd_config.d/00-worldrelay.conf
+sudo /usr/sbin/sshd -t
+sudo systemctl enable --now ssh
+sudo systemctl reload ssh
+
+sudo tee /etc/systemd/system/worldrelay.service >/dev/null <<EOF
+[Unit]
+Description=WorldRelay Server
+After=network-online.target ssh.service
+Wants=network-online.target
+
+[Service]
+User=$SERVICE_USER
+WorkingDirectory=$DEPLOY_DIR
+ExecStart="$DEPLOY_DIR/worldrelay-server"
+Restart=on-failure
+RestartSec=5
+SuccessExitStatus=143
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# 按配置文件中的中文注释修改，至少确认 SSH 公网地址、端口及 rrsync 路径。
+sudo nano "$DEPLOY_DIR/server.properties"
+sudo systemctl daemon-reload
+sudo systemctl enable --now worldrelay
+sudo systemctl status worldrelay --no-pager
+)
 ```
 
-业务接口默认监听 `127.0.0.1:8080`，注册接口固定绑定 `127.0.0.1`，默认端口为 `8081`。
-显式指定 UTF-8 `.properties` 配置文件：
+之后修改配置使用 `sudo nano /home/worldrelay/server.properties`，重启使用 `sudo systemctl restart worldrelay`，查看日志使用 `sudo journalctl -u worldrelay -f`。自定义目录时替换上述路径。
 
-```powershell
-.\gradlew.bat :server:run --args="--config D:/WorldRelay/server.properties"
+管理终端使用 `sudo -H -u worldrelay /home/worldrelay/worldrelay-admin --port 8081`，账户名、路径和管理端口按实际配置替换。
+
+## 无 sudo：在当前账户目录部署
+
+需要管理员已为当前账户启用 SSH 公钥登录，并预装 `curl`、`rsync`、`rrsync`、`python3`。此方式使用 `nohup` 后台运行，机器重启后需要重新启动程序。
+
+```bash
+(
+set -euo pipefail
+VERSION="x.y.z"                       # 改为实际 Release 版本号
+DEPLOY_DIR="$HOME/worldrelay"          # 当前账户内的新部署目录
+REPO="EmptyDreams/WorldRelay"
+
+[[ "$VERSION" != "x.y.z" ]] || { printf '请先填写 VERSION\n' >&2; exit 1; }
+test ! -e "$DEPLOY_DIR"
+for tool in curl tar sha256sum rsync rrsync python3; do
+  command -v "$tool" >/dev/null || { printf '缺少工具：%s\n' "$tool" >&2; exit 1; }
+done
+case "$(uname -m)" in
+  x86_64) ARCH="x64" ;;
+  aarch64|arm64) ARCH="arm64" ;;
+  *) printf '不支持的 CPU 架构\n' >&2; exit 1 ;;
+esac
+ASSET="worldrelay-server-linux-$ARCH.tar.gz"
+ADMIN_ASSET="worldrelay-admin-linux-$ARCH.tar.gz"
+URL="https://github.com/$REPO/releases/download/server-v$VERSION"
+
+umask 077
+mkdir -p "$DEPLOY_DIR"
+cd "$DEPLOY_DIR"
+curl -fL "$URL/$ASSET" -o "$ASSET"
+curl -fL "$URL/$ASSET.sha256" -o "$ASSET.sha256"
+curl -fL "$URL/$ADMIN_ASSET" -o "$ADMIN_ASSET"
+curl -fL "$URL/SHA256SUMS" -o SHA256SUMS
+sha256sum -c "$ASSET.sha256"
+sha256sum --check --ignore-missing SHA256SUMS
+tar -xzf "$ASSET"
+tar -xzf "$ADMIN_ASSET" worldrelay-admin
+./worldrelay-server --config
+# 自动填入当前账户能找到的 rrsync 路径。
+sed -i "s|^ssh.rrsync-command=.*|ssh.rrsync-command=$(command -v rrsync)|" server.properties
+
+# 打开编辑器，按中文注释修改配置；保存退出后启动。
+"${EDITOR:-vi}" server.properties
+nohup ./worldrelay-server >server.log 2>&1 &
+printf '%s\n' "$!" >server.pid
+)
 ```
 
-配置示例：
+之后在部署目录中修改 `server.properties`；停止使用 `kill "$(cat server.pid)"`，等待退出后再启动，启动命令为 `nohup ./worldrelay-server >server.log 2>&1 & echo $! >server.pid`，查看日志使用 `tail -f server.log`。
 
-```properties
-http.bind-address=127.0.0.1
-http.port=8080
-http.max-concurrent-requests=32
-http.shutdown-grace-seconds=5
-registration.port=8081
-auth.users-file=data/users.json
-```
-
-| 配置项 | 默认值 | 说明 |
-|---|---|---|
-| `http.bind-address` | `127.0.0.1` | 监听地址；需要外部访问时可显式配置为 `0.0.0.0` |
-| `http.port` | `8080` | 端口范围 0–65535；0 自动选择可用端口，启动日志输出实际地址 |
-| `http.max-concurrent-requests` | `32` | 同时处理的请求上限，必须为正整数；超限返回 503 |
-| `http.shutdown-grace-seconds` | `5` | 关闭时等待正在处理请求的宽限期，必须为非负整数 |
-| `registration.port` | `8081` | 注册专用端口，范围 0–65535；固定绑定 `127.0.0.1`，不能与业务端口使用相同的非零端口 |
-| `auth.users-file` | `data/users.json` | 用户名与密钥 SHA-256 摘要的 UTF-8 JSON 文件；相对路径按进程工作目录解析 |
-
-不指定 `--config` 时直接使用默认配置，不自动查找或创建配置文件。指定文件不存在、
-配置项未知或值不合法时启动失败并返回非零退出码。两端口都配置为 0 时分别分配端口，
-启动日志输出实际监听地址。公网入口、HTTPS 和虚拟网络由部署环境管理；Basic 的 Base64
-编码不提供加密，业务凭据应通过 HTTPS 或受保护网络传输。不要将注册端口反向代理到外部网络。
-
-## 注册与鉴权
-
-在服务器本机通过 `POST http://127.0.0.1:8081/api/v1/register` 注册，无需已有凭据。
-请求必须为 UTF-8 `application/json`，只包含字符串字段 `username`，请求体上限为 4096 字节：
-
-```powershell
-$registration = Invoke-RestMethod -Uri "http://127.0.0.1:8081/api/v1/register" -Method Post `
-    -ContentType "application/json; charset=utf-8" `
-    -Body ([Text.Encoding]::UTF8.GetBytes('{"username":"小明"}'))
-$registration
-```
-
-成功返回 `201`，例如 `{"username":"小明","key":"<随机密钥>"}`，并设置 `Cache-Control: no-store`。
-密钥由 32 字节安全随机数生成，使用无填充 Base64URL 编码，长度为 43 个字符。
-原密钥仅在本次注册响应中返回，不写入用户文件或日志，需妥善保存。
-用户名区分大小写，允许 1–64 个 Unicode 码点，不允许首尾空白、全空白名称、控制字符或冒号。
-相同用户名再次注册返回 `409 USERNAME_EXISTS`，原密钥保持有效；目前没有找回或重置接口。
-
-注册监听器只提供注册路由，同时检查连接的本地地址和真实对端地址均为 `127.0.0.1`；
-IPv6 `::1`、其他环回地址及远程地址均不能注册。`Forwarded` 和 `X-Forwarded-For` 不影响判断。
-注册路由不在业务端口提供，世界列表等业务路由也不在注册端口提供。
-
-所有业务请求必须携带 `Authorization: Basic <Base64(UTF-8 用户名:密钥)>`：
-
-```powershell
-$credentials = [Convert]::ToBase64String(
-    [Text.Encoding]::UTF8.GetBytes($registration.username + ":" + $registration.key))
-Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/v1/worlds" -Method Get `
-    -Headers @{ Authorization = "Basic $credentials" }
-```
-
-缺失、格式错误、重复认证头、未知用户及错误密钥均返回相同的 `401 UNAUTHORIZED`，附带
-`WWW-Authenticate: Basic realm="WorldRelay", charset="UTF-8"`。业务监听器在路由之前统一鉴权，
-未知路径、未注册方法和以后新增的路由也必须先认证；认证后才按原路由规则返回 404 或 405。
-
-用户文件首次不存在时按空用户集合启动；首次成功注册才创建文件。已存在但无法读取或格式损坏
-会阻止启动，不会自动清空。注册在文件锁保护下串行执行，先写同目录临时文件、刷盘并原子替换，
-成功后才使凭据生效。不支持原子替换或写盘失败时返回 500，可重试；不会降级为普通覆盖写。
-旁边的 `.lock` 文件由服务持锁，多个实例不能同时使用同一用户文件；退出时释放锁，但保留锁文件。
-
-## 共享世界列表（假数据）
-
-`GET /api/v1/worlds` 固定返回四条共享世界摘要，无需请求体，不提供分页或筛选参数。
-默认地址为 `http://127.0.0.1:8080/api/v1/worlds`：
-
-```powershell
-Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/v1/worlds" -Method Get `
-    -Headers @{ Authorization = "Basic $credentials" }
-```
-
-成功返回 200，内容类型为 `application/json; charset=utf-8`。
-以下响应结构示例节选了其中一条记录，实际固定返回下表中的四条：
-
-```json
-{
-  "mock": true,
-  "worlds": [
-    {
-      "worldId": "demo-survival",
-      "name": "我们的生存世界",
-      "status": "RUNNING",
-      "hostName": "小明",
-      "playerCount": 2,
-      "lastCommittedAt": "2026-10-28T10:40:00Z"
-    }
-  ]
-}
-```
-
-| worldId | 名称 | 状态 | 房主 | 在线人数 | 最后提交时间 |
-|---|---|---|---|---|---|
-| `demo-survival` | 我们的生存世界 | `RUNNING` | 小明 | 2 | `2026-10-28T10:40:00Z` |
-| `demo-building` | 建筑练习场 | `FREE` | null | 0 | `2026-10-27T13:16:00Z` |
-| `demo-machinery` | 机械与铁路 | `RECOVERY_REQUIRED` | 小雨 | null | `2026-10-28T09:22:00Z` |
-| `demo-adventure` | 朋友的冒险 | `COMMITTING` | 阿木 | null | `2026-10-28T08:05:00Z` |
-
-`mock: true` 表示固定示例，连续请求的数据及顺序保持不变。`hostName` 无房主时为 JSON null；
-`playerCount` 无法确定时为 JSON null，无人托管时为 0；`lastCommittedAt` 是最后成功提交时间，
-采用固定 UTC 时间字符串。每个响应仍通过 `X-Request-Id` 返回独立的请求 ID。
-
-当前接口需要上述鉴权，不读取真实存档，不进行所有权操作，也未接入客户端页面。
-状态仅供展示，不代表已有可连接的房主。认证后 POST 等未注册的方法返回 405 和 `Allow: GET`；
-尾斜杠、子路径及未知路径仍返回 404。
-
-## 路由与响应
-
-通过 `HttpRouter.register(method, path, HttpHandler)` 显式注册处理器，然后将路由器传给
-`WorldRelayHttpServer`。生产环境由 `WorldRelayService` 在整个业务路由器外装配鉴权，处理器可通过
-`exchange.getPrincipal().getUsername()` 或只读属性 `worldrelay.username` 获取当前请求用户名。
-身份保存在每个请求独立的包装器中，避免并发请求共享 context 属性导致身份串用。
-路由注册必须在启动前完成，同一方法和路径不能重复注册。
-目前仅支持大小写敏感的方法和原始路径精确匹配；查询参数不参与匹配，尾斜杠、编码后的路径
-和子路径不会自动合并。不自动补充 HEAD 或 OPTIONS 路由。
-
-处理器使用 JDK `HttpExchange`，可调用 `HttpResponses.text`、`bytes`、`noContent` 或 `error`。
-响应辅助方法处理 UTF-8、固定长度响应以及 HEAD、204、205、304 无响应体场景。
-处理器应在返回前完成响应写入；框架负责最终关闭 exchange，不支持处理器返回后异步写出。
-
-每个请求由服务端生成独立请求 ID，并通过 `X-Request-Id` 响应头返回，不使用客户端传入的 ID。
-框架错误格式为：
-
-```json
-{"code":"NOT_FOUND","message":"Route not found","requestId":"服务端生成的 UUID"}
-```
-
-| 状态码 | 错误码 | 场景 |
-|---|---|---|
-| 400 | `INVALID_REGISTRATION` | 注册 JSON 或用户名无效 |
-| 401 | `UNAUTHORIZED` | 业务请求凭据缺失或无效 |
-| 403 | `LOCAL_ACCESS_REQUIRED` | 注册连接的真实地址不是 `127.0.0.1` |
-| 404 | `NOT_FOUND` | 路径未注册 |
-| 405 | `METHOD_NOT_ALLOWED` | 路径存在但方法未注册，同时返回 `Allow` 头 |
-| 409 | `USERNAME_EXISTS` | 用户名已注册，保留原密钥 |
-| 413 | `PAYLOAD_TOO_LARGE` | 注册请求体超过 4096 字节 |
-| 415 | `UNSUPPORTED_MEDIA_TYPE` | 注册请求未使用 `application/json` |
-| 503 | `SERVER_BUSY` | 同时处理的请求数达到上限 |
-| 500 | `INTERNAL_ERROR` | 处理器异常或未发送响应便返回 |
-
-错误响应不包含异常详情。响应已经开始发送时发生异常，只记录异常并关闭连接，
-不追加第二份错误响应。JDK 无法接受的协议错误由底层 HTTP 实现处理。
-请求日志使用 JDK 日志，记录方法、原始路径、状态、耗时及请求 ID，不记录查询参数、凭证或请求体。
-
-## 生命周期与验证
-
-`WorldRelayService` 和 `WorldRelayHttpServer` 只允许启动一次，`close()` 可重复调用。
-任一监听器启动失败时关闭已启动的监听器并释放用户文件锁。正常进程退出由 shutdown hook
-停止两个监听器；各监听器的宽限期结束后关闭未完成的连接并中断剩余请求任务。
-并发限制分别应用于两个监听器的处理器执行，不代表 TCP 连接总数限制。
-当前仅注册接口有请求体上限，通用读写超时仍待补充。
-
-```powershell
-.\gradlew.bat :server:build
-```
-
-HTTP 测试通过 JDK `HttpClient` 访问环回地址的随机端口，验证注册、鉴权、端口隔离、并发身份、
-并发重复注册、重启持久化及部分启动失败清理；存储测试覆盖原子发布失败、损坏文件和文件锁。
-真实 socket 地址限制另使用测试 exchange 验证非本机来源及伪造转发头。
-运行时零第三方依赖，JUnit 仅用于测试。未引入反射扫描、动态加载或 GraalVM 构建任务；
-Native Image 兼容性仍需原生构建验证。
+管理终端在同一目录中运行 `./worldrelay-admin --port 8081`，管理端口按实际配置替换。

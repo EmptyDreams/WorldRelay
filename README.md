@@ -1,50 +1,74 @@
+# WorldRelay · 世界接力
 
-# WorldRelay 玩家数据加载
+**朋友轮流当房主，同一个世界接着玩。**
 
-当前已实现共享世界的严格 UUID 玩家数据加载。世界根目录存在普通文件
-`worldrelay.shared` 时启用；标记在玩家存储实例创建时读取，修改标记后需要重启世界。
-普通单人世界不受影响。本次不会自动给已有存档添加标记。
+WorldRelay 让多人在各自电脑上轮流托管同一份 Minecraft 世界。每个人都从「多人游戏 → 共享世界」进入：有人在玩就加入，没人托管就自动成为房主，无需手动传存档、开放 LAN 或填写房主地址。
 
-- 房主和访客均只读取 `playerdata/<当前登录 UUID>.dat`，不使用 `level.dat` 的
-  `Data.Player`，不回退到 `.dat_old`；保留原有保存、数据版本升级及 NeoForge 加载事件。
-- 文件损坏、不可读或不是普通文件时拒绝加入，不覆盖文件。
-- 主文件缺失时返回 `NEEDS_CREATION_CONFIRMATION`。确认 UI 尚未实现，默认提示并取消本次加入。
-  本次不自动迁移旧存档，也不统一正版与离线 UUID。
+只需一台运行 WorldRelay 服务的小服务器，Minecraft 世界由当前房主的电脑运行。房主退出后，其他玩家需要等待交接完成，再重新进入。
 
-后续 UI 通过 `SharedPlayerData` 接入：在 IO 工作线程上创建该世界的服务并调用
-`check(uuid)`，仅在需要确认时调用 `requestCreation(uuid, confirmation)`。
-`MissingPlayerDataConfirmation` 返回异步的 `CREATE`、`CANCEL` 或 `UNAVAILABLE`；
-调用方等待异步结果后再重试加入，不得阻塞渲染线程或服务器线程。
-远端接入时必须使用已认证玩家的 UUID，不能信任客户端指定任意 UUID。
-`CREATE` 只授予当前进程内、绑定世界真实路径和 UUID 的一次初始化许可，
-下一次实际读取时消费；如果文件已出现则加载该文件，如果文件损坏则报错。
-许可允许原版初始化新玩家，不会直接写出空白玩家 NBT。
+## 开始之前
 
-验证命令：`gradlew.bat test build`。测试覆盖共享与普通世界的实际登录检查、主文件读取、
-缺失与损坏、创建确认和一次性许可；完整 A → B → A 联机交接、背包、位置、末影箱、
-维度和模组附加数据仍需双客户端实机验证。
+所有玩家准备 **Minecraft 1.21.1 + NeoForge**，将 WorldRelay 模组 JAR 放入游戏的 `mods/` 目录，并使用兼容的整合包。
 
-Installation information
-=======
+由一位管理员先[部署服务端](server/README.md)，创建玩家账户和共享世界，再向玩家提供接口地址、端口和各自的 Token。账户名需要与游戏中的玩家名称一致。
 
-This template repository can be directly cloned to get you started with a new
-mod. Simply create a new repository cloned from this one, by following the
-instructions provided by [GitHub](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template).
+## 第一次连接
 
-Once you have your clone, simply open the repository in the IDE of your choice. The usual recommendation for an IDE is either IntelliJ IDEA or Eclipse.
+1. 打开「多人游戏 → 共享世界 → 设置」。
+2. 按管理员提供的信息填写连接设置：
 
-If at any point you are missing libraries in your IDE, or you've run into problems you can
-run `gradlew --refresh-dependencies` to refresh the local cache. `gradlew clean` to reset everything 
-{this does not affect your code} and then start the process again.
+   | 设置 | 示例或说明 |
+   | --- | --- |
+   | 协议 | 推荐 HTTPS，也支持 HTTP |
+   | 接口地址 | `relay.example.com`，不含端口和路径 |
+   | 接口端口 | 例如 `443` |
+   | 玩家名称 | 自动读取当前游戏账号，无需填写 |
+   | 服务器 Token | 管理员分配给你的 Token |
 
-Mapping Names:
-============
-By default, the MDK is configured to use the official mapping names from Mojang for methods and fields 
-in the Minecraft codebase. These names are covered by a specific license. All modders should be aware of this
-license. For the latest license text, refer to the mapping file itself, or the reference copy here:
-https://github.com/NeoForged/NeoForm/blob/main/Mojang.md
+3. 选择同步工具的使用方式，然后保存。
 
-Additional Resources: 
-==========
-Community Documentation: https://docs.neoforged.net/  
-NeoForged Discord: https://discord.neoforged.net/
+   - **Windows x64**：若没有安装 rsync 请选择「使用内置」，无需另装同步工具。
+   - **其他平台**：先安装 rsync 和 SSH（系统一般已内置），再选择「自动查找已安装」。
+   - 已有单独安装的工具，也可以选择「自定义路径」，分别填写两个程序的完整路径。
+
+**Token 是账户凭据，请妥善保管。**
+
+## 和朋友一起玩
+
+在共享世界列表中选择世界并进入，后续步骤会自动完成：
+
+| 世界情况 | 进入后的体验 |
+| --- | --- |
+| 还没有存档 | 成为房主，进入原版创建世界流程 |
+| 无人托管 | 同步最新存档，在本机启动世界 |
+| 房主正在游玩 | 直接连接房主 |
+| 正在上传或等待恢复 | 显示当前情况，完成后再进入 |
+
+作为房主时，请保持游戏和电脑运行。退出世界后，等待保存与上传完成，再关闭游戏；朋友随后就能接着托管。
+
+## 崩溃或上传失败怎么办
+
+重新打开共享世界列表，选择原来的世界，按界面提示继续托管或重试上传。恢复完成前，其他玩家会等待原房主，避免覆盖尚未同步的进度。
+
+不要删除游戏目录中的 `worldrelay/`，其中可能还有未上传的存档。崩溃前尚未保存的进度仍可能丢失。
+
+如果原房主无法恢复，管理员可以在[管理终端](admin/README.md)中「放弃进度」，让大家从最后一次成功上传的存档继续；也可以恢复服务端保留的历史备份。放弃操作会丢失未上传的进度。
+
+## 常用模组适配
+
+已为以下模组提供适配，让更换房主后的体验保持连贯。它们都是可选模组，请使用适用于 Minecraft 1.21.1 的兼容版本。
+
+| 模组 | 适配内容 |
+| --- | --- |
+| 机械动力 | 兼容机械动力的蓝图，避免房主交接后蓝图丢失 |
+| Xaero 世界地图与小地图 | 同一共享世界沿用个人地图和路标，不因更换房主重新分组 |
+| Inventory Profiles Next | 同一共享世界沿用个人物品栏配置、锁定槽位和村民书签 |
+| JEI | 同一共享世界沿用个人收藏和查询历史 |
+
+## 常见问题
+
+- **设置无法保存**：检查地址、端口、当前玩家名对应的 Token，以及同步工具是否可用。
+- **能打开列表，但无法加入或同步**：请管理员检查游戏连接入口和 SSH 存档传输入口是否都可访问。
+- **世界一直等待恢复**：先联系原房主恢复；需要舍弃未上传进度时，再由管理员处理。
+
+部署与维护请阅读[服务端指南](server/README.md)，日常管理请阅读[管理终端指南](admin/README.md)。
