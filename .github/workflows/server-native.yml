@@ -90,6 +90,10 @@ jobs:
         timeout-minutes: 8
         run: bash .github/scripts/setup-musl.sh "$RUNNER_TEMP/worldrelay-musl"
 
+      - name: Verify musl secure directory operations
+        if: matrix.arch == 'x64'
+        run: bash .github/scripts/test-musl-nio.sh "$RUNNER_TEMP/worldrelay-musl/nio-test"
+
       - name: Prepare ARM64 glibc 2.28 and static zlib builder
         if: matrix.arch == 'arm64'
         timeout-minutes: 12
@@ -108,7 +112,8 @@ jobs:
               rpm -qL zlib zlib-devel zlib-static | while IFS= read -r file; do
                 if [[ -f "$file" ]]; then cp -- "$file" /licenses/; fi
               done
-              test -n "$(find /licenses -type f -print -quit)"
+              license_files=(/licenses/*)
+              test -f "${license_files[0]}"
             '
 
       - name: Compile instrumented Native Image

@@ -5,7 +5,14 @@ architecture=${1:?Usage: native-image.sh x64|arm64 [native-image options]}
 shift
 case "$architecture" in
   x64)
-    exec native-image --static --libc=musl "$@"
+    source_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/../native-image" && pwd -P)
+    compatibility_object=$(pwd -P)/server/build/native/musl-nio.o
+    mkdir -p "$(dirname "$compatibility_object")"
+    x86_64-linux-musl-gcc -O2 -fPIC -march=x86-64 -mtune=generic \
+      -c "$source_dir/musl-nio.c" -o "$compatibility_object"
+    exec native-image --static --libc=musl \
+      "-H:NativeLinkerOption=$compatibility_object" \
+      -H:NativeLinkerOption=-Wl,--wrap=dlsym "$@"
     ;;
   arm64)
     workspace=$(pwd -P)
