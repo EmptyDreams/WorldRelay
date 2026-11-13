@@ -10,7 +10,7 @@
 
 使用[服务端部署命令](../server/README.md)时，管理终端会一起下载到服务程序旁边。单独安装时：
 
-1. 从服务端同版本的 Release 下载对应架构的 `worldrelay-admin-linux-x64.tar.gz` 或 `worldrelay-admin-linux-arm64.tar.gz`；也可从 **Actions → Admin Console** 获取构建产物。
+1. 从服务端同版本的 Release 下载对应架构的 `worldrelay-linux-*.tar.gz` 或 `worldrelay-jar-linux-*.tar.gz`，两类包都包含管理终端；也可从 **Actions → Admin Console** 获取单独构建产物。
 2. 将压缩包中的 `worldrelay-admin` 放到服务程序旁边。
 3. 通过 SSH 登录服务端所在机器，运行：
 

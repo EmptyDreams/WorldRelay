@@ -197,9 +197,50 @@ jobs:
             server/build/native/*compatibility.json
           if-no-files-found: ignore
 
+  package:
+    name: Package server and admin bundles
+    needs: [linux, admin]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download both architectures
+        uses: actions/download-artifact@v8
+        with:
+          pattern: worldrelay-server-linux-*
+          merge-multiple: true
+          path: release-inputs
+
+      - name: Download admin console
+        uses: actions/download-artifact@v8
+        with:
+          name: worldrelay-admin-linux
+          path: release-inputs
+
+      - name: Download server JAR
+        uses: actions/download-artifact@v8
+        with:
+          name: worldrelay-server-jar
+          path: release-inputs
+
+      - name: Verify inputs and package four distributions
+        run: |
+          python3 -B .github/scripts/package-release.py --input-dir release-inputs --output-dir release-assets
+
+      - name: Upload release bundles
+        uses: actions/upload-artifact@v7
+        with:
+          name: worldrelay-release
+          path: |
+            release-assets/worldrelay-linux-*.tar.gz
+            release-assets/worldrelay-jar-linux-*.tar.gz
+            release-assets/SHA256SUMS
+          if-no-files-found: error
+
   release:
     name: Publish server and admin release
-    needs: [linux, admin]
+    needs: package
     if: startsWith(github.ref, 'refs/tags/server-v')
     runs-on: ubuntu-22.04
     timeout-minutes: 10
@@ -210,44 +251,23 @@ jobs:
       GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ github.ref_name }}
     steps:
-      - name: Download both architectures
+      - name: Download release bundles
         uses: actions/download-artifact@v8
         with:
-          pattern: worldrelay-server-linux-*
-          merge-multiple: true
-          path: release-assets
-
-      - name: Download admin console
-        uses: actions/download-artifact@v8
-        with:
-          name: worldrelay-admin-linux
-          path: release-assets
-
-      - name: Download server JAR
-        uses: actions/download-artifact@v8
-        with:
-          name: worldrelay-server-jar
+          name: worldrelay-release
           path: release-assets
 
       - name: Verify and publish release assets
         working-directory: release-assets
         run: |
-          for arch in x64 arm64; do
-            test -s "worldrelay-server-linux-$arch.tar.gz"
-            test -s "worldrelay-admin-linux-$arch.tar.gz"
-            sha256sum -c "worldrelay-server-linux-$arch.tar.gz.sha256"
-          done
-          test -s worldrelay-server.jar
-          sha256sum -c worldrelay-server.jar.sha256
-          sha256sum -c SHA256SUMS
           assets=(
-            worldrelay-server-linux-x64.tar.gz
-            worldrelay-server-linux-arm64.tar.gz
-            worldrelay-admin-linux-x64.tar.gz
-            worldrelay-admin-linux-arm64.tar.gz
-            worldrelay-server.jar
+            worldrelay-linux-arm64.tar.gz
+            worldrelay-linux-x64.tar.gz
+            worldrelay-jar-linux-arm64.tar.gz
+            worldrelay-jar-linux-x64.tar.gz
           )
-          sha256sum "${assets[@]}" > SHA256SUMS
+          for asset in "${assets[@]}"; do test -s "$asset"; done
+          sha256sum -c SHA256SUMS
           version="${RELEASE_TAG#server-v}"
           options=()
           if [[ "$version" == *-* ]]; then
@@ -255,9 +275,6 @@ jobs:
           fi
           gh release create "$RELEASE_TAG" \
             "${assets[@]}" \
-            worldrelay-server-linux-x64.tar.gz.sha256 \
-            worldrelay-server-linux-arm64.tar.gz.sha256 \
-            worldrelay-server.jar.sha256 \
             SHA256SUMS \
             --verify-tag --title "WorldRelay Server $version" --generate-notes \
             "${options[@]}"

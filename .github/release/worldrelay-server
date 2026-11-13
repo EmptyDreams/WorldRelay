@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+directory=$(CDPATH= cd "$(dirname "$0")" && pwd -P)
+if [ -n "${JAVA_HOME:-}" ]; then
+  java_command="$JAVA_HOME/bin/java"
+else
+  java_command=java
+fi
+exec "$java_command" -Xmx512m -jar "$directory/worldrelay-server.jar" "$@"

@@ -6,3 +6,6 @@ src/generated/**/*.json text eol=lf
 
 # Preserve bundled tool/notice bytes for SHA-256 verification across checkouts.
 src/main/resources/worldrelay/tools/** -text
+
+# Release launchers must also run after packaging from a Windows checkout.
+.github/release/* text eol=lf

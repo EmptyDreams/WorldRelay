@@ -2,11 +2,18 @@
 
 **一台小服务器保存存档，朋友轮流当房主，同一个世界接着玩。**
 
-服务端提供存档交接、历史备份和连接转发，无需安装 Minecraft 服务端或 Java。
+服务端提供存档交接、历史备份和连接转发，无需安装 Minecraft 服务端。原生版无需 Java，JAR 版需要 Java 21+。
 
 x64 服务程序不依赖系统 glibc；ARM64 服务程序需要 glibc 2.28+。两种架构都需要下文列出的 SSH、rsync 等工具。
 
-以下命令面向 **Ubuntu 22.04+ / Debian 12+，x64 或 ARM64**，请在 Bash 中执行。先把开头的 `VERSION` 改为包含 `--config` 初始化功能的已发布版本号（不带 `server-v`），部署目录填写新的绝对路径。两种方式都会从同一版本的 Release 下载服务端和管理终端，解压到同一个目录，选一种执行即可。
+每个发布包都包含服务端和对应架构的管理终端，两类包的启动命令相同：
+
+| 版本 | x64 | ARM64 |
+| --- | --- | --- |
+| 原生版 | `worldrelay-linux-x64.tar.gz` | `worldrelay-linux-arm64.tar.gz` |
+| JAR 版 | `worldrelay-jar-linux-x64.tar.gz` | `worldrelay-jar-linux-arm64.tar.gz` |
+
+以下命令面向 **Ubuntu 22.04+ / Debian 12+，x64 或 ARM64**，请在 Bash 中执行。填写开头的 `VERSION`（不带 `server-v`）和新的部署目录，`EDITION` 默认选原生版，改为 `jar` 则下载 JAR 版。两种部署方式选一种执行即可。
 
 ## 有 sudo：独立账户，禁用交互登录
 
@@ -21,9 +28,10 @@ x64 服务程序不依赖系统 glibc；ARM64 服务程序需要 glibc 2.28+。�
 ```bash
 (
 set -euo pipefail
-VERSION="x.y.z"                       # 改为实际 Release 版本号
-SERVICE_USER="worldrelay"             # 新建的专用账户名
-DEPLOY_DIR="/home/$SERVICE_USER"       # 新账户的主目录和部署目录
+VERSION="x.y.z"                     # 改为实际 Release 版本号
+EDITION="native"                    # native 或 jar；JAR 版先准备系统 Java 21+
+SERVICE_USER="worldrelay"           # 新建的专用账户名
+DEPLOY_DIR="/home/$SERVICE_USER"    # 新账户的主目录和部署目录
 REPO="EmptyDreams/WorldRelay"
 
 [[ "$VERSION" != "x.y.z" ]] || { printf '请先填写 VERSION\n' >&2; exit 1; }
@@ -33,8 +41,11 @@ case "$(uname -m)" in
   aarch64|arm64) ARCH="arm64" ;;
   *) printf '不支持的 CPU 架构\n' >&2; exit 1 ;;
 esac
-ASSET="worldrelay-server-linux-$ARCH.tar.gz"
-ADMIN_ASSET="worldrelay-admin-linux-$ARCH.tar.gz"
+case "$EDITION" in
+  native) ASSET="worldrelay-linux-$ARCH.tar.gz" ;;
+  jar) ASSET="worldrelay-jar-linux-$ARCH.tar.gz" ;;
+  *) printf 'EDITION 只能填写 native 或 jar\n' >&2; exit 1 ;;
+esac
 URL="https://github.com/$REPO/releases/download/server-v$VERSION"
 
 sudo sh -c '
@@ -43,19 +54,18 @@ for tool in curl tar sha256sum rsync rrsync python3 nano systemctl useradd userm
 done
 test -x /usr/sbin/sshd || { printf "缺少 OpenSSH 服务端，请先自行安装\n" >&2; exit 1; }
 '
+if [[ "$EDITION" == jar ]]; then
+  sudo sh -c 'command -v java >/dev/null' || { printf '请先准备 Java 21+\n' >&2; exit 1; }
+fi
 sudo useradd --system --user-group --home-dir "$DEPLOY_DIR" --shell /bin/sh "$SERVICE_USER"
 sudo usermod --password '*' "$SERVICE_USER"
 sudo install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 755 "$DEPLOY_DIR"
 
 sudo curl -fL "$URL/$ASSET" -o "$DEPLOY_DIR/$ASSET"
-sudo curl -fL "$URL/$ASSET.sha256" -o "$DEPLOY_DIR/$ASSET.sha256"
-sudo curl -fL "$URL/$ADMIN_ASSET" -o "$DEPLOY_DIR/$ADMIN_ASSET"
 sudo curl -fL "$URL/SHA256SUMS" -o "$DEPLOY_DIR/SHA256SUMS"
 cd "$DEPLOY_DIR"
-sudo sha256sum -c "$ASSET.sha256"
 sudo sha256sum --check --ignore-missing SHA256SUMS
 sudo tar --no-same-owner -xzf "$ASSET"
-sudo tar --no-same-owner -xzf "$ADMIN_ASSET" worldrelay-admin
 sudo -H -u "$SERVICE_USER" ./worldrelay-server --config
 sudo install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 700 "$DEPLOY_DIR/state"
 sudo chown root:root "$DEPLOY_DIR"
@@ -115,8 +125,9 @@ sudo systemctl status worldrelay --no-pager
 ```bash
 (
 set -euo pipefail
-VERSION="x.y.z"                       # 改为实际 Release 版本号
-DEPLOY_DIR="$HOME/worldrelay"          # 当前账户内的新部署目录
+VERSION="x.y.z"                     # 改为实际 Release 版本号
+EDITION="native"                    # native 或 jar；JAR 版先准备 Java 21+
+DEPLOY_DIR="$HOME/worldrelay"       # 当前账户内的新部署目录
 REPO="EmptyDreams/WorldRelay"
 
 [[ "$VERSION" != "x.y.z" ]] || { printf '请先填写 VERSION\n' >&2; exit 1; }
@@ -129,21 +140,23 @@ case "$(uname -m)" in
   aarch64|arm64) ARCH="arm64" ;;
   *) printf '不支持的 CPU 架构\n' >&2; exit 1 ;;
 esac
-ASSET="worldrelay-server-linux-$ARCH.tar.gz"
-ADMIN_ASSET="worldrelay-admin-linux-$ARCH.tar.gz"
+case "$EDITION" in
+  native) ASSET="worldrelay-linux-$ARCH.tar.gz" ;;
+  jar) ASSET="worldrelay-jar-linux-$ARCH.tar.gz" ;;
+  *) printf 'EDITION 只能填写 native 或 jar\n' >&2; exit 1 ;;
+esac
+if [[ "$EDITION" == jar ]]; then
+  command -v java >/dev/null || { printf '请先准备 Java 21+\n' >&2; exit 1; }
+fi
 URL="https://github.com/$REPO/releases/download/server-v$VERSION"
 
 umask 077
 mkdir -p "$DEPLOY_DIR"
 cd "$DEPLOY_DIR"
 curl -fL "$URL/$ASSET" -o "$ASSET"
-curl -fL "$URL/$ASSET.sha256" -o "$ASSET.sha256"
-curl -fL "$URL/$ADMIN_ASSET" -o "$ADMIN_ASSET"
 curl -fL "$URL/SHA256SUMS" -o SHA256SUMS
-sha256sum -c "$ASSET.sha256"
 sha256sum --check --ignore-missing SHA256SUMS
 tar -xzf "$ASSET"
-tar -xzf "$ADMIN_ASSET" worldrelay-admin
 ./worldrelay-server --config
 # 自动填入当前账户能找到的 rrsync 路径。
 sed -i "s|^ssh.rrsync-command=.*|ssh.rrsync-command=$(command -v rrsync)|" server.properties
