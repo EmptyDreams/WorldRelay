@@ -28,11 +28,13 @@ jobs:
     timeout-minutes: 60
     env:
       ARTIFACT_NAME: worldrelay-server-linux-${{ matrix.arch }}
+      ARM64_NATIVE_BASE: container-registry.oracle.com/graalvm/native-image:25-ol8
+      ARM64_NATIVE_IMAGE: worldrelay-native-arm64:build
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Test training process and profile handling
+      - name: Test compatibility checks and training process
         run: python3 -B -m unittest discover -s .github/scripts -p 'test_*.py'
 
       - name: Setup JDK 21
@@ -64,6 +66,7 @@ jobs:
           if-no-files-found: error
 
       - name: Setup GraalVM 25
+        if: matrix.arch == 'x64'
         uses: graalvm/setup-graalvm@v1
         with:
           distribution: graalvm
@@ -71,15 +74,55 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Ensure native toolchain
+        if: matrix.arch == 'x64'
         timeout-minutes: 8
         run: bash .github/scripts/ensure-native-toolchain.sh
+
+      - name: Cache x64 musl toolchain
+        if: matrix.arch == 'x64'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/worldrelay-musl/toolchain
+          key: musl-${{ runner.os }}-${{ runner.arch }}-ubuntu22-${{ hashFiles('.github/scripts/setup-musl.sh') }}
+
+      - name: Prepare x64 musl and static zlib
+        if: matrix.arch == 'x64'
+        timeout-minutes: 8
+        run: bash .github/scripts/setup-musl.sh "$RUNNER_TEMP/worldrelay-musl"
+
+      - name: Prepare ARM64 glibc 2.28 and static zlib builder
+        if: matrix.arch == 'arm64'
+        timeout-minutes: 12
+        run: |
+          timeout --kill-after=10s 360s docker pull --platform linux/arm64 "$ARM64_NATIVE_BASE"
+          timeout --kill-after=10s 240s docker build --platform linux/arm64 \
+            --build-arg BASE_IMAGE="$ARM64_NATIVE_BASE" --tag "$ARM64_NATIVE_IMAGE" \
+            --file .github/docker/server-native-arm64.Dockerfile .github/docker
+          docker run --rm --platform linux/arm64 --entrypoint /bin/sh "$ARM64_NATIVE_IMAGE" -c \
+            'test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.28" && test -f /usr/lib64/libz.a && native-image --version'
+          mkdir -p server/build/native/licenses/zlib
+          docker run --rm --platform linux/arm64 --user "$(id -u):$(id -g)" \
+            --mount "type=bind,src=$PWD/server/build/native/licenses/zlib,dst=/licenses" \
+            --entrypoint /bin/bash "$ARM64_NATIVE_IMAGE" -c '
+              set -euo pipefail
+              rpm -qL zlib zlib-devel zlib-static | while IFS= read -r file; do
+                if [[ -f "$file" ]]; then cp -- "$file" /licenses/; fi
+              done
+              test -n "$(find /licenses -type f -print -quit)"
+            '
 
       - name: Compile instrumented Native Image
         run: |
           mkdir -p server/build/native
-          native-image --no-fallback -march=compatibility -J-Xmx5g -R:MaxHeapSize=512m --pgo-instrument \
+          bash .github/scripts/native-image.sh "${{ matrix.arch }}" \
+            --no-fallback -march=compatibility -J-Xmx5g -R:MaxHeapSize=512m --pgo-instrument \
             -jar server/build/libs/server-0.1.0-SNAPSHOT.jar \
             -o server/build/native/worldrelay-server-instrumented
+
+      - name: Verify instrumented executable compatibility
+        run: |
+          python3 -B .github/scripts/check-native-compatibility.py --arch "${{ matrix.arch }}" \
+            --report server/build/native/instrumented-compatibility.json server/build/native/worldrelay-server-instrumented
 
       - name: Run fixed PGO training workload
         run: |
@@ -91,10 +134,16 @@ jobs:
           for profile in 1-wss 2-tcp 3-tcp; do
             test -s "server/build/native/pgo/profiles/$profile.iprof"
           done
-          native-image --no-fallback -march=compatibility -J-Xmx5g -R:MaxHeapSize=512m \
+          bash .github/scripts/native-image.sh "${{ matrix.arch }}" \
+            --no-fallback -march=compatibility -J-Xmx5g -R:MaxHeapSize=512m \
             --pgo=server/build/native/pgo/profiles/1-wss.iprof,server/build/native/pgo/profiles/2-tcp.iprof,server/build/native/pgo/profiles/3-tcp.iprof \
             -jar server/build/libs/server-0.1.0-SNAPSHOT.jar \
             -o server/build/native/worldrelay-server
+
+      - name: Verify final executable compatibility
+        run: |
+          python3 -B .github/scripts/check-native-compatibility.py --arch "${{ matrix.arch }}" \
+            --report server/build/native/compatibility.json server/build/native/worldrelay-server
 
       - name: Verify PGO optimized server with fixed workload
         run: |
@@ -109,12 +158,18 @@ jobs:
             server/build/native/pgo/profiles/*.iprof
             server/build/native/pgo/summary.json
             server/build/native/verify/summary.json
+            server/build/native/*compatibility.json
           if-no-files-found: error
 
       - name: Package executable
         run: |
           cp server/README.md server/build/native/README.md
-          tar -C server/build/native -czf "server/build/$ARTIFACT_NAME.tar.gz" worldrelay-server README.md
+          files=(worldrelay-server README.md licenses)
+          if [[ "${{ matrix.arch }}" == x64 ]]; then
+            mkdir -p server/build/native/licenses
+            cp "$MUSL_TOOLCHAIN/share/licenses/"*.txt server/build/native/licenses/
+          fi
+          tar -C server/build/native -czf "server/build/$ARTIFACT_NAME.tar.gz" "${files[@]}"
           cd server/build
           sha256sum "$ARTIFACT_NAME.tar.gz" > "$ARTIFACT_NAME.tar.gz.sha256"
 
@@ -139,6 +194,7 @@ jobs:
             server/build/native/pgo/summary.json
             server/build/native/verify/*.log
             server/build/native/verify/summary.json
+            server/build/native/*compatibility.json
           if-no-files-found: ignore
 
   release:
