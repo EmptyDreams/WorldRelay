@@ -52,8 +52,13 @@ final class LocalWorldSessionStore {
     }
 
     LocalWorldSessionStore(Path game, String server, String player, UUID profile, String world) throws IOException {
-        if (!UUID.fromString(world).toString().equals(world)) throw new IOException("Invalid world ID");
         this.world = world;
+        this.root = location(game, server, player, profile, world);
+        createDirectories(root);
+    }
+
+    static Path location(Path game, String server, String player, UUID profile, String world) throws IOException {
+        if (!UUID.fromString(world).toString().equals(world)) throw new IOException("Invalid world ID");
         String scope;
         try {
             scope = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
@@ -61,8 +66,16 @@ final class LocalWorldSessionStore {
         } catch (NoSuchAlgorithmException impossible) {
             throw new AssertionError(impossible);
         }
-        this.root = game.toAbsolutePath().normalize().resolve("worldrelay").resolve(scope).resolve(world);
-        createDirectories(root);
+        return game.toAbsolutePath().normalize().resolve("worldrelay").resolve(scope).resolve(world);
+    }
+
+    Path root() {
+        return root;
+    }
+
+    Path imported(String id) throws IOException {
+        if (!UUID.fromString(id).toString().equals(id)) throw new IOException("Invalid import ID");
+        return root.resolve("work").resolve("import-" + id);
     }
 
     Path saves(long epoch) throws IOException {
@@ -85,7 +98,7 @@ final class LocalWorldSessionStore {
         return path;
     }
 
-    record Cache(Path payload, String hash) {
+    record Cache(Path payload, String hash, boolean imported) {
 
     }
 
@@ -94,11 +107,11 @@ final class LocalWorldSessionStore {
         if (Files.notExists(file, LinkOption.NOFOLLOW_LINKS)) return null;
         try {
             JsonObject json = JsonParser.parseString(readBounded(file)).getAsJsonObject();
-            long epoch = json.get("epoch").getAsBigDecimal().longValueExact();
             String direction = ClientJson.requiredString(json, "direction");
             String hash = ClientJson.requiredString(json, "hash");
             if (!hash.matches("[0-9a-f]{64}")) throw new IllegalArgumentException();
-            return new Cache(transfer(epoch, direction), hash);
+            if (direction.equals("import")) return new Cache(imported(ClientJson.requiredString(json, "id")), hash, true);
+            return new Cache(transfer(json.get("epoch").getAsBigDecimal().longValueExact(), direction), hash, false);
         } catch (RuntimeException failure) {
             throw new IOException("Invalid local snapshot cache");
         }
@@ -112,13 +125,30 @@ final class LocalWorldSessionStore {
         atomicWrite(root.resolve("cache.json"), json.toString());
     }
 
+    void cacheImported(String id, String hash) throws IOException {
+        imported(id);
+        JsonObject json = new JsonObject();
+        json.addProperty("direction", "import");
+        json.addProperty("id", id);
+        json.addProperty("hash", hash);
+        atomicWrite(root.resolve("cache.json"), json.toString());
+    }
+
+    void cleanupAfterImport() {
+        try {
+            LocalWorldCleanup.clean(root, read(), cache(), true);
+        } catch (IOException | RuntimeException failure) {
+            WorldRelay.LOGGER.warn("Old imported cache cleanup will retry after the next checkpoint", failure);
+        }
+    }
+
     /** 只在新副本完整落盘或提交确认后调用；清理失败不能把已完成的同步报告为失败。 */
     void cleanupAfterCheckpoint() {
         try {
             var session = read();
-            if (session == null) return;
             var latest = cache();
-            if (session.stage() == LocalWorldSession.Stage.COMMITTED && session.manifestHash() != null) {
+            if (session != null && session.stage() == LocalWorldSession.Stage.COMMITTED && session.manifestHash() != null
+                && (latest == null || !latest.imported())) {
                 Path uploaded = root.resolve("work").resolve(Long.toString(session.epoch())).resolve("upload");
                 if ((latest == null || !latest.payload().equals(uploaded) || !latest.hash().equals(session.manifestHash()))
                     && Files.isDirectory(uploaded.resolve("world"), LinkOption.NOFOLLOW_LINKS)) {
@@ -134,6 +164,10 @@ final class LocalWorldSessionStore {
     }
 
     LocalWorldSession read() throws IOException {
+        return readSession(root, world);
+    }
+
+    static LocalWorldSession readSession(Path root, String world) throws IOException {
         Path file = root.resolve("session.json");
         if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS)) return null;
         try {

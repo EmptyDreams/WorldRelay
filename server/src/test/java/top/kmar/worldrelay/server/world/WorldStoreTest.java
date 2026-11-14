@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
-@SuppressWarnings({"DataFlowIssue", "resource"})
+@SuppressWarnings("resource") // 失败路径直接断言 open 抛异常，不会取得可关闭的存储实例。
 class WorldStoreTest {
 
     @TempDir

@@ -77,8 +77,9 @@ class ServerConfigTest {
         Files.writeString(file, "");
         var defaults = ServerConfig.load(file).ssh();
         Path keys = Path.of(System.getProperty("user.home"), ".ssh", "authorized_keys");
+        Path transfers = Path.of("data/transfers");
         assertEquals(keys, defaults.authorizedKeysFile());
-        assertEquals(Path.of("data/transfers"), defaults.transferDirectory());
+        assertEquals(transfers, defaults.transferDirectory());
         Files.writeString(file, """
             ssh.rrsync-command=/usr/local/bin/rrsync
             ssh.public-host=[2001:db8::1]
@@ -86,7 +87,7 @@ class ServerConfigTest {
             """);
         var ssh = ServerConfig.load(file).ssh();
         assertEquals(keys, ssh.authorizedKeysFile());
-        assertEquals(Path.of("data/transfers"), ssh.transferDirectory());
+        assertEquals(transfers, ssh.transferDirectory());
         assertEquals("/usr/local/bin/rrsync", ssh.rrsyncCommand());
         assertEquals("2001:db8::1", ssh.publicHost());
         assertEquals(2222, ssh.publicPort());

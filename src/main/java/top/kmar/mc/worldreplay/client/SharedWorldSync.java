@@ -120,11 +120,18 @@ final class SharedWorldSync {
     }
 
     private static void seedCache(LocalWorldSessionStore store, Path payload) throws IOException {
-        if (Files.exists(payload.resolve("world"), LinkOption.NOFOLLOW_LINKS)) return;
         LocalWorldSessionStore.Cache cache;
+        Path marker = payload.resolveSibling(".import-seed");
+        String importedStamp;
         try {
             cache = store.cache();
             if (cache == null || cache.payload().equals(payload)) return;
+            boolean existing = Files.exists(payload.resolve("world"), LinkOption.NOFOLLOW_LINKS);
+            if (existing && !cache.imported()) return;
+            importedStamp = cache.payload().getFileName() + ":" + cache.hash();
+            // 手动导入可替换旧的未完成下载；同一次导入只铺底一次，重试保留已经下载的新数据。
+            if (existing && Files.isRegularFile(marker, LinkOption.NOFOLLOW_LINKS)
+                && Files.size(marker) <= 256 && Files.readString(marker).equals(importedStamp)) return;
             var manifest = SnapshotManifest.read(cache.payload().resolve(SnapshotManifest.FILE_NAME), cache.hash());
             SnapshotFiles.verify(cache.payload().resolve("world"), manifest);
         } catch (IOException ignored) {
@@ -133,9 +140,13 @@ final class SharedWorldSync {
         Path temporary = Files.createTempDirectory(payload.getParent(), ".cache-seed-");
         Path world = temporary.resolve("world");
         SnapshotFiles.copyIsolated(cache.payload().resolve("world"), world, false);
+        if (Files.exists(payload.resolve("world"), LinkOption.NOFOLLOW_LINKS)) {
+            Files.move(payload.resolve("world"), temporary.resolve("previous"), StandardCopyOption.ATOMIC_MOVE);
+        }
         Files.move(world, payload.resolve("world"), StandardCopyOption.ATOMIC_MOVE);
         Files.copy(cache.payload().resolve(SnapshotManifest.FILE_NAME), payload.resolve(SnapshotManifest.FILE_NAME), StandardCopyOption.REPLACE_EXISTING);
-        Files.delete(temporary);
+        if (cache.imported()) LocalWorldSessionStore.atomicWrite(marker, importedStamp);
+        LocalWorldCleanup.deleteTree(temporary);
     }
 
     private static boolean commit(ClientConnectionSettings settings, String user, LocalWorldSession session, boolean required) throws IOException {

@@ -53,9 +53,10 @@ public record SshRegistrationConfig(Path authorizedKeysFile, Path transferDirect
             throw new IllegalArgumentException("Invalid SSH transfer user");
         String home = transferUser.equals(System.getProperty("user.name"))
             ? System.getProperty("user.home") : accountHome(transferUser);
-        if (home == null || home.isBlank() || !Path.of(home).isAbsolute())
+        Path homeDirectory = home == null || home.isBlank() ? null : Path.of(home);
+        if (homeDirectory == null || !homeDirectory.isAbsolute())
             throw new IllegalArgumentException("SSH transfer user must have an absolute home directory: " + transferUser);
-        return Path.of(home).resolve(".ssh/authorized_keys");
+        return homeDirectory.resolve(".ssh/authorized_keys");
     }
 
     private static String accountHome(String user) {

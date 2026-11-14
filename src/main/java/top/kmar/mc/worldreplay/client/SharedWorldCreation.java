@@ -51,6 +51,35 @@ public final class SharedWorldCreation {
     private SharedWorldCreation() {
     }
 
+    /** 本地管理操作与下载、上传共用串行队列，防止清理或导入与同步同时改写目录。 */
+    static <T> CompletableFuture<T> localFiles(Path root, Callable<T> operation) {
+        return CompletableFuture.supplyAsync(() -> {
+            if (localBusy(root)) {
+                throw new CompletionException(new IOException("Local world is running or synchronizing"));
+            }
+            try {
+                return operation.call();
+            } catch (Exception failure) {
+                throw new CompletionException(failure);
+            }
+        }, IO);
+    }
+
+    static boolean localBusy(Path root) {
+        Creation current = active;
+        return current != null && current.store.root().equals(root)
+            && (current.busy || Minecraft.getInstance().getSingleplayerServer() != null);
+    }
+
+    static void forgetLocal(Path root) {
+        Creation current = active;
+        if (current != null && current.store.root().equals(root)) {
+            current.stopHeartbeat();
+            if (current.tunnelHost != null) current.tunnelHost.close();
+            active = null;
+        }
+    }
+
     public static Creation opening() {
         return opening;
     }
@@ -340,7 +369,7 @@ public final class SharedWorldCreation {
         private volatile LocalWorldSession session;
         private LevelStorageSource storage;
         private ScheduledFuture<?> heartbeat;
-        private boolean busy;
+        private volatile boolean busy;
         private boolean resuming;
         private volatile Path worldDirectory;
         private volatile boolean normalStop;

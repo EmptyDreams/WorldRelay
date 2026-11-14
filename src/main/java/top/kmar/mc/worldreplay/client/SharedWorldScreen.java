@@ -2,19 +2,23 @@ package top.kmar.mc.worldreplay.client;
 
 import net.minecraft.Util;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractScrollWidget;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.ObjectSelectionList;
+import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.narration.NarratedElementType;
 import net.minecraft.client.gui.narration.NarrationElementOutput;
 import net.minecraft.client.gui.navigation.CommonInputs;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.ConfirmScreen;
 import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.sounds.SoundEvents;
+import net.minecraft.ChatFormatting;
 import net.minecraft.util.FormattedCharSequence;
 import org.jetbrains.annotations.NotNull;
 
@@ -26,8 +30,10 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.Callable;
 
 /** 共享世界列表；首次创建经协调服务取得所有权后进入原版创建流程。 */
 public final class SharedWorldScreen extends Screen {
@@ -61,6 +67,24 @@ public final class SharedWorldScreen extends Screen {
     private int listRequestGeneration;
     private boolean listRefreshPending;
     private boolean listLoading;
+    private Button deleteLocalButton, importLocalButton, exportLocalButton;
+    private LocalContext localContext;
+    private LocalWorldFiles.State localState;
+    private boolean localLoading;
+    private int localRequestGeneration;
+
+    private record LocalContext(Path game, ClientConnectionSettings settings, String user, UUID profile, String world, Path root) {
+        LocalWorldSessionStore store() throws IOException {
+            return new LocalWorldSessionStore(game, settings.serverUri().toString(), user, profile, world);
+        }
+
+        <T> CompletableFuture<T> run(Callable<T> action) {
+            return SharedWorldCreation.localFiles(root, () -> {
+                LocalWorldSessionStore.lockGame(game);
+                return action.call();
+            });
+        }
+    }
 
     public SharedWorldScreen(Screen parent) {
         super(Component.translatable("worldrelay.menu.shared_worlds"));
@@ -79,6 +103,7 @@ public final class SharedWorldScreen extends Screen {
             return;
         }
         this.listLoading = true;
+        String selectedId = this.selectedWorld == null ? null : this.selectedWorld.worldId();
         int generation = ++this.listRequestGeneration;
         Path file = client.gameDirectory.toPath().resolve("config/worldrelay-client.json");
         String playerName = client.getUser().getName();
@@ -112,7 +137,8 @@ public final class SharedWorldScreen extends Screen {
             this.listLoading = false;
             this.loadFailed = error != null;
             this.worlds = error == null ? loaded : List.of();
-            this.selectedWorld = this.worlds.isEmpty() ? null : this.worlds.getFirst();
+            this.selectedWorld = this.worlds.stream().filter(world -> world.worldId().equals(selectedId)).findFirst()
+                .orElse(this.worlds.isEmpty() ? null : this.worlds.getFirst());
             this.listMessage = Component.translatable(TRANSLATION_PREFIX + (error != null ? "load_failed" : "empty"));
             this.rebuildWidgets();
         }));
@@ -121,6 +147,7 @@ public final class SharedWorldScreen extends Screen {
     @Override
     public void removed() {
         ++this.listRequestGeneration;
+        ++this.localRequestGeneration;
         this.listLoading = false;
         super.removed();
     }
@@ -132,7 +159,7 @@ public final class SharedWorldScreen extends Screen {
         int contentTop = CONTENT_TOP;
         int contentHeight = Math.max(40, this.height - contentTop - 54);
         int buttonY = this.height - 40;
-        int detailsHeight = Math.max(40, buttonY + Button.DEFAULT_HEIGHT - contentTop);
+        int detailsHeight = Math.max(40, buttonY - 6 - contentTop);
         int listWidth = (contentWidth - COLUMN_GAP) * 3 / 5;
         int detailsX = MARGIN + listWidth + COLUMN_GAP;
         // 详情滚动条绘制在控件右侧，额外预留其占用的宽度。
@@ -159,6 +186,14 @@ public final class SharedWorldScreen extends Screen {
         this.addRenderableWidget(Button.builder(CommonComponents.GUI_BACK, button -> this.onClose())
             .bounds(backX, buttonY, listWidth - (buttonWidth + buttonGap) * 2, Button.DEFAULT_HEIGHT).build());
 
+        this.deleteLocalButton = this.addRenderableWidget(new LocalFileButton(detailsX, buttonY, LocalFileAction.DELETE,
+            button -> this.deleteLocal()));
+        this.importLocalButton = this.addRenderableWidget(new LocalFileButton(detailsX + LocalFileButton.SIZE + buttonGap,
+            buttonY, LocalFileAction.IMPORT, button -> this.importLocal()));
+        this.exportLocalButton = this.addRenderableWidget(new LocalFileButton(detailsX + (LocalFileButton.SIZE + buttonGap) * 2,
+            buttonY, LocalFileAction.EXPORT, button -> this.exportLocal()));
+        this.localButtons();
+
         worldList.children().stream().filter(entry -> entry.world.equals(this.selectedWorld)).findFirst()
             .ifPresent(worldList::setSelected);
         this.setInitialFocus(worldList);
@@ -172,6 +207,7 @@ public final class SharedWorldScreen extends Screen {
     public void tick() {
         super.tick();
         this.detailsPanel.refreshTime();
+        this.localButtons();
     }
 
     @Override
@@ -242,6 +278,97 @@ public final class SharedWorldScreen extends Screen {
         if (this.minecraft != null) {
             this.minecraft.setScreen(parent);
         }
+    }
+
+    private void localButtons() {
+        if (deleteLocalButton == null) return;
+        boolean ready = selectedWorld != null && localContext != null && !localLoading && !listLoading
+            && !SharedWorldCreation.localBusy(localContext.root());
+        deleteLocalButton.active = ready && localState != null && localState.present();
+        importLocalButton.active = ready;
+        exportLocalButton.active = ready && localState != null && localState.present();
+    }
+
+    private void loadLocal(ListedWorld world) {
+        var client = Objects.requireNonNull(minecraft);
+        int generation = ++localRequestGeneration;
+        localLoading = true;
+        localContext = null;
+        localState = null;
+        localButtons();
+        Path game = client.gameDirectory.toPath();
+        String user = client.getUser().getName();
+        UUID profile = client.getUser().getProfileId();
+        CompletableFuture.supplyAsync(() -> {
+            try {
+                var settings = ClientConnectionSettings.load(game.resolve("config/worldrelay-client.json"));
+                Path root = LocalWorldSessionStore.location(game, settings.serverUri().toString(), user, profile, world.worldId());
+                var context = new LocalContext(game, settings, user, profile, world.worldId(), root);
+                return java.util.Map.entry(context, LocalWorldFiles.inspect(root));
+            } catch (IOException failure) {
+                throw new CompletionException(failure);
+            }
+        }, Util.ioPool()).whenComplete((result, failure) -> client.execute(() -> {
+            if (generation != localRequestGeneration || client.screen != this || selectedWorld == null
+                || !selectedWorld.worldId().equals(world.worldId())) return;
+            localLoading = false;
+            if (failure == null) {
+                localContext = result.getKey();
+                localState = result.getValue();
+            }
+            localButtons();
+            detailsPanel.show(selectedWorld);
+        }));
+    }
+
+    private void importLocal() {
+        if (localContext == null || selectedWorld == null || minecraft == null) return;
+        var context = localContext;
+        minecraft.setScreen(new SharedWorldFileScreen(this, selectedWorld.name(), source -> context.run(() -> {
+            LocalWorldFiles.importSnapshot(context.store(), source);
+            return null;
+        })));
+    }
+
+    private void exportLocal() {
+        if (localContext == null || selectedWorld == null || minecraft == null) return;
+        var context = localContext;
+        minecraft.setScreen(SharedWorldFileScreen.forExport(this, selectedWorld.name(), (target, replace) -> context.run(() -> {
+            LocalWorldFiles.exportSnapshot(context.store(), target, replace);
+            return null;
+        })));
+    }
+
+    private void deleteLocal() {
+        if (localContext == null || localState == null || selectedWorld == null || minecraft == null) return;
+        var context = localContext;
+        var state = localState;
+        var client = minecraft;
+        var message = Component.translatable("worldrelay.local_world.delete_body", selectedWorld.name());
+        if (state.unuploaded()) message.append("\n\n").append(Component.translatable("worldrelay.local_world.delete_unuploaded").withStyle(ChatFormatting.RED));
+        if (state.ownershipPending()) message.append("\n\n").append(Component.translatable("worldrelay.local_world.delete_ownership"));
+        var confirmation = new ConfirmScreen(confirmed -> {
+            if (!confirmed) {
+                client.setScreen(this);
+                return;
+            }
+            client.setScreen(new SharedWorldOperationScreen(this, "local_deleting", true, null));
+            context.run(() -> {
+                LocalWorldFiles.checkUnused(context.root());
+                SharedWorldCreation.forgetLocal(context.root());
+                LocalWorldFiles.delete(context.root(), state.unuploaded());
+                return null;
+            }).whenComplete((ignored, failure) -> client.execute(() -> {
+                if (failure == null) client.setScreen(this);
+                else {
+                    top.kmar.mc.worldreplay.WorldRelay.LOGGER.warn("Local world deletion did not complete", failure);
+                    client.setScreen(new SharedWorldOperationScreen(this, "local_delete_failed", false, null));
+                }
+            }));
+        }, Component.translatable("worldrelay.local_world.delete_title"), message,
+            Component.translatable("worldrelay.local_world.delete_confirm"), CommonComponents.GUI_CANCEL);
+        client.setScreen(confirmation);
+        confirmation.setDelay(20);
     }
 
     /** 只描述本页展示需要的数据，不代表已经实现协调服务或游戏连接。 */
@@ -319,6 +446,7 @@ public final class SharedWorldScreen extends Screen {
             if (entry != null) {
                 selectedWorld = entry.world;
                 detailsPanel.show(selectedWorld);
+                loadLocal(selectedWorld);
             }
         }
 
@@ -430,6 +558,9 @@ public final class SharedWorldScreen extends Screen {
             y = addParagraph(Component.translatable(TRANSLATION_PREFIX + "host", world.hostName()), SECONDARY_TEXT_COLOR, y, 2);
             y = addParagraph(Component.translatable(TRANSLATION_PREFIX + "players", world.playerCount()), SECONDARY_TEXT_COLOR, y, 2);
             y = addParagraph(Component.translatable(TRANSLATION_PREFIX + "last_sync", this.lastSyncText), SECONDARY_TEXT_COLOR, y, 6);
+            String local = localLoading ? "checking" : localContext == null ? "unavailable" : localState != null && localState.present() ? "present" : "absent";
+            y = addParagraph(Component.translatable("worldrelay.local_world." + local), SECONDARY_TEXT_COLOR, y, 2);
+            if (localState != null && localState.unuploaded()) y = addParagraph(Component.translatable("worldrelay.local_world.unuploaded"), 0xFFFFAA55, y, 6);
             this.contentHeight = addParagraph(world.status().description(), TEXT_COLOR, y, PADDING);
             this.setScrollAmount(0);
         }
@@ -489,6 +620,50 @@ public final class SharedWorldScreen extends Screen {
             output.add(NarratedElementType.HINT, selectedWorld.status().description());
         }
 
+    }
+
+    private enum LocalFileAction { DELETE, IMPORT, EXPORT }
+
+    /** 保留原版按钮的交互与朗读名称，仅将文字绘制替换为像素图标。 */
+    private static final class LocalFileButton extends Button {
+        private static final int SIZE = Button.DEFAULT_HEIGHT;
+        private final LocalFileAction action;
+
+        LocalFileButton(int x, int y, LocalFileAction action, OnPress onPress) {
+            super(x, y, SIZE, SIZE,
+                Component.translatable("worldrelay.local_world." + action.name().toLowerCase(java.util.Locale.ROOT)), onPress, DEFAULT_NARRATION);
+            this.action = action;
+            setTooltip(Tooltip.create(getMessage()));
+        }
+
+        @Override
+        public void renderString(@NotNull GuiGraphics graphics, @NotNull Font font, int color) {
+            int x = getX() + 4;
+            int y = getY() + 4;
+            if (action == LocalFileAction.DELETE) {
+                // 垃圾桶：提手、桶盖、桶身和两条竖线。
+                graphics.fill(x + 4, y, x + 8, y + 2, color);
+                graphics.fill(x + 1, y + 2, x + 11, y + 3, color);
+                graphics.fill(x + 2, y + 4, x + 3, y + 11, color);
+                graphics.fill(x + 9, y + 4, x + 10, y + 11, color);
+                graphics.fill(x + 3, y + 11, x + 9, y + 12, color);
+                graphics.fill(x + 4, y + 5, x + 5, y + 10, color);
+                graphics.fill(x + 7, y + 5, x + 8, y + 10, color);
+            } else {
+                // 同一托盘配向下/向上箭头，分别表示导入和导出。
+                for (int row = 0; row < 8; row++) {
+                    int arrowY = y + (action == LocalFileAction.EXPORT ? 7 - row : row);
+                    if (row < 7) graphics.fill(x + 5, arrowY, x + 7, arrowY + 1, color);
+                    if (row >= 4) {
+                        graphics.fill(x + row - 2, arrowY, x + row, arrowY + 1, color);
+                        graphics.fill(x + 12 - row, arrowY, x + 14 - row, arrowY + 1, color);
+                    }
+                }
+                graphics.fill(x, y + 8, x + 1, y + 12, color);
+                graphics.fill(x + 11, y + 8, x + 12, y + 12, color);
+                graphics.fill(x + 1, y + 11, x + 11, y + 12, color);
+            }
+        }
     }
 
     private record DetailLine(FormattedCharSequence text, int y, int color) {

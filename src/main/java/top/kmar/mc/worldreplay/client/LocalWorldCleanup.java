@@ -21,20 +21,25 @@ final class LocalWorldCleanup {
     private LocalWorldCleanup() {
     }
 
-    static void clean(Path root, LocalWorldSession session, @Nullable LocalWorldSessionStore.Cache cache) throws IOException {
+    static void clean(Path root, @Nullable LocalWorldSession session, @Nullable LocalWorldSessionStore.Cache cache) throws IOException {
+        clean(root, session, cache, false);
+    }
+
+    static void clean(Path root, @Nullable LocalWorldSession session, @Nullable LocalWorldSessionStore.Cache cache,
+                      boolean importing) throws IOException {
         SnapshotFiles.requireDirectory(root);
         Path work = root.resolve("work");
         if (Files.notExists(work, LinkOption.NOFOLLOW_LINKS)) return;
         SnapshotFiles.requireDirectory(work);
         Set<Path> keep = new HashSet<>();
         if (cache != null) keep.add(cache.payload());
-        if (session.epoch() > 0 && session.stage() != LocalWorldSession.Stage.COMMITTED) {
+        if (session != null && session.epoch() > 0 && session.stage() != LocalWorldSession.Stage.COMMITTED) {
             Path current = work.resolve(Long.toString(session.epoch()));
             if (session.folder() != null) keep.add(current.resolve("saves").resolve(session.folder()));
             if (session.stage() == LocalWorldSession.Stage.UPLOADING) keep.add(current.resolve("upload"));
             if (session.stage() == LocalWorldSession.Stage.DOWNLOADING) keep.add(current.resolve("download"));
         }
-        if (session.localSource() != null) {
+        if (session != null && session.localSource() != null) {
             var source = session.localSource();
             keep.add(work.resolve(Long.toString(source.epoch())).resolve("saves").resolve(source.folder()));
         }
@@ -46,6 +51,12 @@ final class LocalWorldCleanup {
         for (Path epoch : children(work)) {
             SnapshotFiles.requireDirectory(epoch);
             Path saves = epoch.resolve("saves");
+            // 导入尚未经过服务器校验，不能据此淘汰工作进度；缺失恢复记录时也保守保留。
+            if (session == null || importing && session.stage() != LocalWorldSession.Stage.COMMITTED) {
+                if (Files.exists(saves, LinkOption.NOFOLLOW_LINKS)) keep.add(saves);
+                Path upload = epoch.resolve("upload");
+                if (Files.exists(upload, LinkOption.NOFOLLOW_LINKS)) keep.add(upload);
+            }
             for (Path world : children(saves)) {
                 SnapshotFiles.requireDirectory(world);
                 Path lock = world.resolve("session.lock");
@@ -83,7 +94,7 @@ final class LocalWorldCleanup {
         deleteTree(target);
     }
 
-    private static void deleteTree(Path target) throws IOException {
+    static void deleteTree(Path target) throws IOException {
         SnapshotFiles.requireDirectory(target.getParent());
         try (var parent = Files.newDirectoryStream(target.getParent())) {
             if (parent instanceof SecureDirectoryStream<Path> secure) {
