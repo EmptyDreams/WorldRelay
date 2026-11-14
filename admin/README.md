@@ -11,17 +11,19 @@
 使用[服务端部署命令](../server/README.md)时，管理终端会一起下载到服务程序旁边。单独安装时：
 
 1. 从服务端同版本的 Release 下载对应架构的 `worldrelay-linux-*.tar.gz` 或 `worldrelay-jar-linux-*.tar.gz`，两类包都包含管理终端；也可从 **Actions → Admin Console** 获取单独构建产物。
-2. 将压缩包中的 `worldrelay-admin` 放到服务程序旁边。
+2. 将压缩包中的 `worldrelay-admin` 与 `worldrelay-server`（或 `worldrelay-server.jar`）、`server.properties` 放在同一目录。
 3. 通过 SSH 登录服务端所在机器，运行：
 
    ```bash
    chmod +x ./worldrelay-admin
-   ./worldrelay-admin --port 8081
+   ./worldrelay-admin
    ```
 
-端口填写服务端的 `registration.port`，默认 `8081`。管理终端只连接本机服务，请在同一台机器运行。使用 UTF-8 终端，建议窗口至少为 80 列 × 24 行；远程直接执行时使用 `ssh -t`。
+管理终端自动读取自身所在目录的 `server.properties`，使用其中的 `registration.port` 连接本机服务，无需传入端口。未配置该项时使用服务端默认值 `8081`。从其他目录或通过符号链接启动，也会读取实际程序目录中的配置。
 
-独立账户部署时，使用 `sudo -H -u worldrelay /home/worldrelay/worldrelay-admin --port 8081`，账户名和路径按实际部署替换。
+使用 UTF-8 终端，建议窗口至少为 80 列 × 24 行；远程直接执行时使用 `ssh -t`。
+
+独立账户部署时，使用 `sudo -H -u worldrelay /home/worldrelay/worldrelay-admin`，账户名和路径按实际部署替换。
 
 ## 怎么操作
 

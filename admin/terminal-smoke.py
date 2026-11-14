@@ -8,6 +8,7 @@ import os
 import pty
 import re
 import select
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -66,18 +67,27 @@ def main():
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    executable = str(args.executable.resolve())
+    source_executable = args.executable.resolve()
     port = server.server_port
     try:
-        # 验证无需 TTY 的只读检查与实际伪终端的首页、中文输入、创建、刷新和正常退出。
-        check = subprocess.run([executable, "--port", str(port), "--check"], capture_output=True, check=True, timeout=10)
-        assert json.loads(check.stdout)["version"] == "terminal-fixture"
         with tempfile.TemporaryDirectory(prefix="admin-terminal-") as directory:
+            # 配置跟随实际程序目录；从含干扰配置的其他目录启动，不能读取启动目录的端口。
+            deployment = Path(directory)
+            executable = str(deployment / "worldrelay-admin")
+            shutil.copy2(source_executable, executable)
+            (deployment / "worldrelay-server").write_text("terminal server fixture\n", encoding="utf-8")
+            (deployment / "server.properties").write_text(f"registration.port={port}\n", encoding="utf-8")
+            caller = deployment / "elsewhere"
+            caller.mkdir()
+            (caller / "server.properties").write_text("registration.port=1\n", encoding="utf-8")
+            # 验证无需 TTY 的只读检查与实际伪终端的首页、中文输入、创建、刷新和正常退出。
+            check = subprocess.run([executable, "--check"], cwd=caller, capture_output=True, check=True, timeout=10)
+            assert json.loads(check.stdout)["version"] == "terminal-fixture"
             master, slave = pty.openpty()
             # 较小高度确保概览溢出，让滚轮必须实际移动可见内容。
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 20, 100, 0, 0))
             env = dict(os.environ, TERM="xterm-256color", NO_COLOR="1", LANG="C.UTF-8")
-            process = subprocess.Popen([executable, "--port", str(port), "--refresh", "0", "--state-dir", directory],
+            process = subprocess.Popen([executable, "--refresh", "0"], cwd=caller,
                                        stdin=slave, stdout=slave, stderr=slave, env=env)
             os.close(slave)
             captured = bytearray()
@@ -195,7 +205,8 @@ def main():
                 expect("▸退出")
                 os.write(master, b"\r")
                 assert process.wait(timeout=10) == 0
-                assert not (Path(directory) / "pending.json").exists()
+                assert (deployment / "state/console.lock").is_file()
+                assert not (deployment / "state/pending.json").exists()
             finally:
                 if process.poll() is None:
                     process.terminate()

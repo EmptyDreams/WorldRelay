@@ -116,7 +116,7 @@ sudo systemctl status worldrelay --no-pager
 
 之后修改配置使用 `sudo nano /home/worldrelay/server.properties`，重启使用 `sudo systemctl restart worldrelay`，查看日志使用 `sudo journalctl -u worldrelay -f`。自定义目录时替换上述路径。
 
-管理终端使用 `sudo -H -u worldrelay /home/worldrelay/worldrelay-admin --port 8081`，账户名、路径和管理端口按实际配置替换。
+管理终端使用 `sudo -H -u worldrelay /home/worldrelay/worldrelay-admin`，自动读取同目录的 `server.properties` 获取管理端口。账户名和路径按实际部署替换。
 
 ## 无 sudo：在当前账户目录部署
 
@@ -170,4 +170,4 @@ printf '%s\n' "$!" >server.pid
 
 之后在部署目录中修改 `server.properties`；停止使用 `kill "$(cat server.pid)"`，等待退出后再启动，启动命令为 `nohup ./worldrelay-server >server.log 2>&1 & echo $! >server.pid`，查看日志使用 `tail -f server.log`。
 
-管理终端在同一目录中运行 `./worldrelay-admin --port 8081`，管理端口按实际配置替换。
+管理终端运行 `./worldrelay-admin`，自动读取程序同目录的 `server.properties` 获取管理端口。

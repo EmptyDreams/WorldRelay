@@ -23,7 +23,6 @@ func main() {
 }
 
 func run() error {
-	port := flag.Int("port", 8081, "本机管理端口（registration.port，开发机为 2001）")
 	timeout := flag.Duration("timeout", 10*time.Second, "单次 HTTP 请求超时")
 	refresh := flag.Duration("refresh", 5*time.Second, "概览和用户列表刷新间隔（0 关闭；世界列表手动刷新）")
 	stateDir := flag.String("state-dir", "", "待确认操作目录（默认可执行文件旁的 state/）")
@@ -34,10 +33,18 @@ func run() error {
 		fmt.Println("worldrelay-admin", version)
 		return nil
 	}
-	if flag.NArg() != 0 || *port < 1 || *port > 65535 || *timeout <= 0 || *refresh < 0 {
-		return fmt.Errorf("请检查端口、超时和刷新间隔；使用 --help 查看参数")
+	if flag.NArg() != 0 || *timeout <= 0 || *refresh < 0 {
+		return fmt.Errorf("请检查超时和刷新间隔；使用 --help 查看参数")
 	}
-	api := newClient(*port, *timeout)
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	deployment, port, err := loadDeployment(executable)
+	if err != nil {
+		return err
+	}
+	api := newClient(port, *timeout)
 	defer api.http.CloseIdleConnections()
 	if *check {
 		response, err := api.call(context.Background(), "status", nil)
@@ -50,11 +57,7 @@ func run() error {
 		return json.NewEncoder(os.Stdout).Encode(response.body)
 	}
 	if *stateDir == "" {
-		executable, err := os.Executable()
-		if err != nil {
-			return err
-		}
-		*stateDir = filepath.Join(filepath.Dir(executable), "state")
+		*stateDir = filepath.Join(deployment, "state")
 	}
 	store := journal{dir: *stateDir}
 	unlock, err := store.lock()

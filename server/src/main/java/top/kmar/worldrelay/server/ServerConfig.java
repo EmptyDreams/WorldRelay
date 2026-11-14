@@ -36,7 +36,7 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
         new Option("http.port", "玩家接口端口；0 表示由系统分配可用端口。", ServerConfig::port),
         new Option("http.max-concurrent-requests", "每个 HTTP 监听器同时处理的请求上限，至少为 1。", ServerConfig::maxConcurrentRequests),
         new Option("http.shutdown-grace-seconds", "停止服务时等待正在处理的 HTTP 请求结束的秒数。", ServerConfig::shutdownGraceSeconds),
-        new Option("registration.port", "本机管理端口，固定监听 127.0.0.1；管理终端需使用相同端口，请勿开放到公网。", ServerConfig::registrationPort),
+        new Option("registration.port", "本机管理端口，固定监听 127.0.0.1；同目录的管理终端自动读取此项，请勿开放到公网。", ServerConfig::registrationPort),
         new Option("ownership.heartbeat-interval-seconds", "房主发送心跳的建议间隔，单位秒，至少为 1。", ServerConfig::heartbeatIntervalSeconds),
         new Option("ownership.heartbeat-timeout-seconds", "判定房主离线的秒数，须大于心跳间隔；离线不会自动允许他人接管。", ServerConfig::heartbeatTimeoutSeconds),
         new Option("ssh.rrsync-command", "rrsync 程序的完整路径，按服务器实际安装位置填写。", config -> config.ssh().rrsyncCommand()),
