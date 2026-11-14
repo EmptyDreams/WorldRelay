@@ -7,4 +7,5 @@ if [ -n "${JAVA_HOME:-}" ]; then
 else
   java_command=java
 fi
-exec "$java_command" -Xmx512m -jar "$directory/worldrelay-server.jar" "$@"
+# 小规模联机使用串行 GC 和较小初始堆，存档处理仍可按需使用最多 512 MiB 堆。
+exec "$java_command" -XX:+UseSerialGC -Xms16m -Xmx512m -jar "$directory/worldrelay-server.jar" "$@"

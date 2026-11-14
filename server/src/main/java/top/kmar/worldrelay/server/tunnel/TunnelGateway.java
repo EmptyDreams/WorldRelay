@@ -2,6 +2,7 @@ package top.kmar.worldrelay.server.tunnel;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.*;
 import io.netty.channel.group.DefaultChannelGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
@@ -34,6 +35,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 /** 鉴权后的世界路由；每条数据连接单独配对，不解释或修改 Minecraft 数据包。 */
 @SuppressWarnings("resource") // 处理器借用的 Netty 事件循环统一由 Gateway.close 关闭。
 public final class TunnelGateway implements AutoCloseable {
+
+    // 五人房间通常需要 1 条房主控制连接和 8 条访客/房主数据连接，额外保留重连及查询余量。
+    private static final int MAX_CONNECTIONS = 32, MAX_TICKETS = 64;
 
     private enum Role {HOST, JOIN, ATTACH}
 
@@ -95,8 +99,11 @@ public final class TunnelGateway implements AutoCloseable {
     private final SecureRandom random = new SecureRandom();
     private final NioEventLoopGroup acceptor = new NioEventLoopGroup(1, daemon("worldrelay-tunnel-accept"));
     private final NioEventLoopGroup workers = new NioEventLoopGroup(2, daemon("worldrelay-tunnel-io"));
-    private final ExecutorService authority = new ThreadPoolExecutor(2, 2, 0, TimeUnit.SECONDS,
-        new ArrayBlockingQueue<>(128), daemon("worldrelay-tunnel-auth"), new ThreadPoolExecutor.AbortPolicy());
+    // 两个 IO 线程各用一个直接内存池；每块 1 MiB，避免池数量随部署机器的 CPU 数膨胀。
+    private final PooledByteBufAllocator buffers = new PooledByteBufAllocator(true, 1, 2, 8192, 7, 64, 16, false);
+    // 鉴权本来就需要进入同一个 worlds 锁，使用单线程顺序处理。
+    private final ExecutorService authority = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS,
+        new ArrayBlockingQueue<>(32), daemon("worldrelay-tunnel-auth"), new ThreadPoolExecutor.AbortPolicy());
     private final DefaultChannelGroup channels = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
     private final AtomicInteger connectionCount = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -130,6 +137,7 @@ public final class TunnelGateway implements AutoCloseable {
         try {
             if (config.mode() == TunnelConfig.Mode.TCP) tls = new TunnelIdentity(config.tlsDirectory());
             listener = new ServerBootstrap().group(acceptor, workers).channel(NioServerSocketChannel.class)
+                .childOption(ChannelOption.ALLOCATOR, buffers)
                 .childOption(ChannelOption.TCP_NODELAY, true)
                 .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(131072, 262144))
                 .childHandler(new ChannelInitializer<SocketChannel>() {
@@ -138,7 +146,7 @@ public final class TunnelGateway implements AutoCloseable {
                         channels.add(channel);
                         int count = connectionCount.incrementAndGet();
                         channel.closeFuture().addListener(done -> connectionCount.decrementAndGet());
-                        if (closed.get() || count > 128) {
+                        if (closed.get() || count > MAX_CONNECTIONS) {
                             channel.close();
                             return;
                         }
@@ -212,7 +220,7 @@ public final class TunnelGateway implements AutoCloseable {
 
     private synchronized Grant issue(Ticket ticket) throws WorldAccessException {
         tickets.values().removeIf(value -> value.expires <= ticker.getAsLong() || value.lease != null && !value.lease.current());
-        if (closed.get() || tickets.size() >= 1024) throw new WorldAccessException(503, "TUNNEL_BUSY", "Tunnel is busy");
+        if (closed.get() || tickets.size() >= MAX_TICKETS) throw new WorldAccessException(503, "TUNNEL_BUSY", "Tunnel is busy");
         byte[] bytes = new byte[32];
         random.nextBytes(bytes);
         String token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);

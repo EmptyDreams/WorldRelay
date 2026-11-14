@@ -144,7 +144,7 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
     }
 
     public static ServerConfig defaults() {
-        return new ServerConfig("127.0.0.1", 8080, 32, 5);
+        return new ServerConfig("127.0.0.1", 8080, 16, 5);
     }
 
     public static ServerConfig fromArgs(String... args) throws IOException {

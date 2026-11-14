@@ -101,7 +101,11 @@ class TunnelGatewayTest {
         }
 
         Socket guest(World world) throws Exception {
-            var grant = gateway.join(world.id, "Guest", false);
+            return guest(world, "Guest");
+        }
+
+        Socket guest(World world, String username) throws Exception {
+            var grant = gateway.join(world.id, username, false);
             var connector = connector();
             var session = connector.connect(endpoint(grant), grant.token(), null).get(10, TimeUnit.SECONDS);
             var address = connector.listen(session).get(10, TimeUnit.SECONDS);
@@ -167,6 +171,37 @@ class TunnelGatewayTest {
             jobs.shutdownNow();
         }
 
+    }
+
+    /** 验证一名房主与四名访客同时联机，两种隧道均能完整转发各自数据并正确统计在线玩家。 */
+    @ParameterizedTest
+    @EnumSource(TunnelConfig.Mode.class)
+    void forwardsFivePlayerRoom(TunnelConfig.Mode mode) throws Exception {
+        try (var fixture = new Fixture(mode); var echo = new Echo(0); var jobs = Executors.newVirtualThreadPerTaskExecutor()) {
+            var world = fixture.world();
+            fixture.host(world, echo.port());
+            List<Socket> guests = new ArrayList<>();
+            for (int index = 1; index <= 4; index++) guests.add(fixture.guest(world, "Guest" + index));
+            List<Future<Void>> writes = new ArrayList<>();
+            List<Future<byte[]>> reads = new ArrayList<>();
+            List<byte[]> payloads = new ArrayList<>();
+            for (int index = 0; index < guests.size(); index++) {
+                Socket guest = guests.get(index);
+                byte[] payload = new byte[512 * 1024];
+                new Random(index).nextBytes(payload);
+                payloads.add(payload);
+                writes.add(jobs.submit(() -> {
+                    guest.getOutputStream().write(payload);
+                    return null;
+                }));
+                reads.add(jobs.submit(() -> guest.getInputStream().readNBytes(payload.length)));
+            }
+            for (int index = 0; index < guests.size(); index++) {
+                assertArrayEquals(payloads.get(index), reads.get(index).get(15, TimeUnit.SECONDS));
+                writes.get(index).get(5, TimeUnit.SECONDS);
+            }
+            assertEquals(Set.of("Host", "Guest1", "Guest2", "Guest3", "Guest4"), fixture.gateway.onlineUsers());
+        }
     }
 
     /** 两种传输通过真实 Socket 验证跨世界转发、背压，以及同账号多世界连接的在线人数去重。 */

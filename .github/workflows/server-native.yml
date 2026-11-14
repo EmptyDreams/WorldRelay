@@ -131,7 +131,8 @@ jobs:
         run: |
           mkdir -p server/build/native
           bash .github/scripts/native-image.sh "${{ matrix.arch }}" \
-            --no-fallback -march=compatibility -J-Xmx5g -R:MaxHeapSize=512m --pgo-instrument \
+            --no-fallback -march=compatibility --gc=serial -J-Xmx5g \
+            -R:MinHeapSize=16m -R:MaxHeapSize=512m --pgo-instrument \
             -jar server/build/libs/server-0.1.0-SNAPSHOT.jar \
             -o server/build/native/worldrelay-server-instrumented
 
@@ -151,7 +152,8 @@ jobs:
             test -s "server/build/native/pgo/profiles/$profile.iprof"
           done
           bash .github/scripts/native-image.sh "${{ matrix.arch }}" \
-            --no-fallback -march=compatibility -J-Xmx5g -R:MaxHeapSize=512m \
+            --no-fallback -march=compatibility --gc=serial -J-Xmx5g \
+            -R:MinHeapSize=16m -R:MaxHeapSize=512m \
             --pgo=server/build/native/pgo/profiles/1-wss.iprof,server/build/native/pgo/profiles/2-tcp.iprof,server/build/native/pgo/profiles/3-tcp.iprof \
             -jar server/build/libs/server-0.1.0-SNAPSHOT.jar \
             -o server/build/native/worldrelay-server
