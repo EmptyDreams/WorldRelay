@@ -16,9 +16,9 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class TunnelApiTest {
 
-    /** 服务端选择 WSS 或 TCP 后，客户端派生入口并传递玩家确认结果，不要求另填公网地址。 */
+    /** 服务端选择 WSS 或 TCP 后，客户端派生入口；新玩家按原版规则自动初始化。 */
     @Test
-    void followsAdvertisedTransportAndScopesNewPlayerConsent() throws Exception {
+    void followsAdvertisedTransportAndAllowsNewPlayersWithoutConfirmation() throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         AtomicReference<String> reply = new AtomicReference<>();
         AtomicReference<JsonObject> request = new AtomicReference<>();
@@ -35,12 +35,12 @@ class TunnelApiTest {
             String common = "\"ticket\":\"" + "b".repeat(43) + "\",\"expiresAt\":\"" + Instant.now().plusSeconds(60) + "\"";
             reply.set("{" + common + ",\"mode\":\"wss\",\"path\":\"/api/v1/tunnel\"}");
             String world = UUID.randomUUID().toString();
-            var wss = TunnelApi.ticket(settings, "Guest", world, null, false);
+            var wss = TunnelApi.ticket(settings, "Guest", world, null);
             assertEquals("ws", wss.endpoint().uri().getScheme());
             assertEquals(server.getAddress().getPort(), wss.endpoint().port());
-            assertFalse(request.get().get("allowNewPlayer").getAsBoolean());
+            assertTrue(request.get().get("allowNewPlayer").getAsBoolean());
             reply.set("{" + common + ",\"mode\":\"tcp\",\"host\":\"relay.example.com\",\"port\":2222,\"fingerprint\":\"" + "d".repeat(64) + "\"}");
-            var tcp = TunnelApi.ticket(settings, "Guest", world, null, true);
+            var tcp = TunnelApi.ticket(settings, "Guest", world, null);
             assertEquals("tls://relay.example.com:2222", tcp.endpoint().uri().toString());
             assertEquals("d".repeat(64), tcp.endpoint().fingerprint());
             assertTrue(request.get().get("allowNewPlayer").getAsBoolean());

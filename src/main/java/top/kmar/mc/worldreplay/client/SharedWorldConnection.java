@@ -1,7 +1,6 @@
 package top.kmar.mc.worldreplay.client;
 
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.screens.ConfirmScreen;
 import net.minecraft.client.gui.screens.ConnectScreen;
 import net.minecraft.client.gui.screens.DisconnectedScreen;
 import net.minecraft.client.gui.screens.Screen;
@@ -10,8 +9,6 @@ import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.resolver.ResolvedServerAddress;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
 import net.minecraft.network.Connection;
-import net.minecraft.network.chat.Component;
-import net.minecraft.network.chat.contents.TranslatableContents;
 import top.kmar.worldrelay.tunnel.TunnelConnector;
 
 import java.net.InetAddress;
@@ -25,7 +22,6 @@ public final class SharedWorldConnection implements AutoCloseable {
 
     private static volatile SharedWorldConnection pending;
     private static volatile SharedWorldConnection active;
-    private static final java.util.Set<String> CREATION_CONSENTS = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final TunnelConnector connector = new TunnelConnector();
     private final String host;
     private final String name;
@@ -33,7 +29,6 @@ public final class SharedWorldConnection implements AutoCloseable {
     private InetSocketAddress local;
     private Screen connectingScreen;
     private Connection minecraftConnection;
-    private String consentKey;
 
     private SharedWorldConnection(Screen parent, String world, String name) {
         this.parent = parent;
@@ -46,8 +41,7 @@ public final class SharedWorldConnection implements AutoCloseable {
     static SharedWorldConnection prepare(Screen parent, ClientConnectionSettings settings, String user, String world, String name) throws Exception {
         var connection = new SharedWorldConnection(parent, world, name);
         try {
-            connection.consentKey = settings.serverUri() + "/" + world + "/" + Minecraft.getInstance().getUser().getProfileId();
-            var ticket = TunnelApi.ticket(settings, user, world, null, CREATION_CONSENTS.contains(connection.consentKey));
+            var ticket = TunnelApi.ticket(settings, user, world, null);
             var stream = connection.connector.connect(ticket.endpoint(), ticket.token(), null).get(10, TimeUnit.SECONDS);
             connection.local = connection.connector.listen(stream).get(10, TimeUnit.SECONDS);
             return connection;
@@ -130,21 +124,6 @@ public final class SharedWorldConnection implements AutoCloseable {
         Minecraft client = Minecraft.getInstance();
         if (current != null && client.screen != current.connectingScreen
             && (client.screen == current.parent || client.screen instanceof DisconnectedScreen)) current.close();
-    }
-
-    public static void disconnected(String host, Component reason) {
-        var current = pending;
-        if (current == null || !current.host.equals(host) || CREATION_CONSENTS.contains(current.consentKey)
-            || !(reason.getContents() instanceof TranslatableContents text)
-            || !text.getKey().equals("worldrelay.disconnect.player_data_confirmation_required")) return;
-        current.close();
-        Minecraft client = Minecraft.getInstance();
-        client.setScreen(new ConfirmScreen(confirmed -> {
-            if (confirmed) {
-                CREATION_CONSENTS.add(current.consentKey);
-                SharedWorldCreation.join(current.parent, current.host.substring(0, 36), current.name);
-            } else client.setScreen(current.parent);
-        }, Component.translatable("worldrelay.creation.player_title"), Component.translatable("worldrelay.creation.player_message")));
     }
 
     @Override

@@ -40,7 +40,7 @@ final class SharedWorldHost implements AutoCloseable {
                     warned = false;
                     return;
                 }
-                TunnelApi.Ticket ticket = TunnelApi.ticket(settings, user, owner.worldId(), owner, false);
+                TunnelApi.Ticket ticket = TunnelApi.ticket(settings, user, owner.worldId(), owner);
                 var connected = await(connector.connect(ticket.endpoint(), ticket.token(), request -> {
                     if (closed.get()) return;
                     String[] fields = request.split("\n", -1);
@@ -52,7 +52,7 @@ final class SharedWorldHost implements AutoCloseable {
                                     local.close();
                                 } catch (java.io.IOException ignored) { /* 清理未配对的本机连接。 */ }
                             } else {
-                                AutoCloseable admission = top.kmar.mc.worldreplay.playerdata.TunnelPlayerAccess.register(local.getLocalSocketAddress(), fields[1], fields[2].equals("1"));
+                                AutoCloseable admission = top.kmar.mc.worldreplay.playerdata.TunnelPlayerAccess.register(local.getLocalSocketAddress(), fields[1]);
                                 stream.bindRaw(local, () -> {
                                     try {
                                         admission.close();

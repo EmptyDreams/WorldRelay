@@ -1,7 +1,6 @@
 package top.kmar.mc.worldreplay.client;
 
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.screens.ConfirmScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.worldselection.CreateWorldScreen;
 import net.minecraft.client.gui.screens.worldselection.WorldOpenFlows;
@@ -19,7 +18,6 @@ import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.event.server.ServerStoppedEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import top.kmar.mc.worldreplay.WorldRelay;
-import top.kmar.mc.worldreplay.playerdata.MissingPlayerDataConfirmation;
 import top.kmar.mc.worldreplay.playerdata.SharedPlayerData;
 
 import java.io.IOException;
@@ -143,7 +141,7 @@ public final class SharedWorldCreation {
                     store.write(session); // 响应丢失时用同一个 requestId 恢复，绝不重新抢锁。
                 }
                 if (session.stage() == LocalWorldSession.Stage.STOPPED || session.stage() == LocalWorldSession.Stage.UPLOADING) {
-                    var creation = new Creation(parent, user, profile, settings, store, session, current.allowOfflinePlayers());
+                    var creation = new Creation(parent, user, settings, store, session, current.allowOfflinePlayers());
                     if (active != null) active.stopHeartbeat();
                     active = creation;
                     creation.worldDirectory = store.saves(session.epoch()).resolve(session.folder());
@@ -158,10 +156,9 @@ public final class SharedWorldCreation {
                     client.execute(() -> show(parent, "recovering", true, null));
                     try {
                         var prepared = SharedWorldRecovery.prepare(settings, user, session, store);
-                        var creation = new Creation(parent, user, profile, settings, store, session, current.allowOfflinePlayers());
+                        var creation = new Creation(parent, user, settings, store, session, current.allowOfflinePlayers());
                         creation.worldDirectory = prepared.directory();
                         creation.storage = LevelStorageSource.createDefault(store.saves(session.epoch()));
-                        creation.confirmPlayerData();
                         creation.save(session.with(LocalWorldSession.Stage.STARTED, session.folder()));
                         if (active != null) {
                             active.stopHeartbeat();
@@ -196,7 +193,7 @@ public final class SharedWorldCreation {
                 }
                 if (session.stage() == LocalWorldSession.Stage.CANCELLING) {
                     // 上次取消可能已在服务端成功；直接重试取消，不能先 acquire 已撤销的请求。
-                    var creation = new Creation(parent, user, profile, settings, store, session, current.allowOfflinePlayers());
+                    var creation = new Creation(parent, user, settings, store, session, current.allowOfflinePlayers());
                     if (active != null) active.stopHeartbeat();
                     active = creation;
                     client.execute(() -> {
@@ -229,7 +226,7 @@ public final class SharedWorldCreation {
                 if (session.stage() != LocalWorldSession.Stage.DOWNLOADING) session = LocalWorldReplacement.acceptOwnership(session, view);
                 else view.checkSession(session);
                 store.write(session);
-                var creation = new Creation(parent, user, profile, settings, store, session, view.allowOfflinePlayers());
+                var creation = new Creation(parent, user, settings, store, session, view.allowOfflinePlayers());
                 Creation previous = active;
                 if (previous != null) previous.stopHeartbeat();
                 active = creation;
@@ -361,7 +358,6 @@ public final class SharedWorldCreation {
 
         private final Screen parent;
         private final String user;
-        private final UUID profile;
         private final boolean allowOfflinePlayers;
         private final ClientConnectionSettings settings;
         private final LocalWorldSessionStore store;
@@ -384,12 +380,11 @@ public final class SharedWorldCreation {
         private boolean finishPending = true;
 
         private Creation(
-            Screen parent, String user, UUID profile, ClientConnectionSettings settings,
+            Screen parent, String user, ClientConnectionSettings settings,
             LocalWorldSessionStore store, LocalWorldSession session, boolean allowOfflinePlayers
         ) {
             this.parent = parent;
             this.user = user;
-            this.profile = SharedWorldLoginPolicy.playerId(user, profile, allowOfflinePlayers);
             this.allowOfflinePlayers = allowOfflinePlayers;
             this.settings = settings;
             this.store = store;
@@ -438,7 +433,6 @@ public final class SharedWorldCreation {
                     var prepared = LocalWorldReplacement.prepare(settings, user, session, store);
                     worldDirectory = prepared.directory();
                     storage = LevelStorageSource.createDefault(store.saves(session.epoch()));
-                    confirmPlayerData();
                     save(session.with(LocalWorldSession.Stage.STARTED, source.folder()));
                     Minecraft.getInstance().execute(() -> {
                         busy = false;
@@ -468,7 +462,6 @@ public final class SharedWorldCreation {
                     save(session.with(LocalWorldSession.Stage.DOWNLOADING, folder));
                     Path game = Minecraft.getInstance().gameDirectory.toPath();
                     worldDirectory = SharedWorldSync.download(game, settings, user, session, store);
-                    confirmPlayerData();
                     var view = WorldOwnershipClient.command(settings, user, session, "ready", "SAVE_SYNCED");
                     if (!view.phase().equals("STARTING") || !java.util.Objects.equals(view.baseVersion(), session.baseVersion())) {
                         throw new IOException("Unexpected start state");
@@ -492,21 +485,6 @@ public final class SharedWorldCreation {
                     });
                 }
             });
-        }
-
-        private void confirmPlayerData() throws IOException, ExecutionException, InterruptedException {
-            var playerData = new SharedPlayerData(worldDirectory);
-            var check = playerData.check(profile);
-            if (check.status() == SharedPlayerData.Status.ERROR) throw new IOException("Unreadable shared player data");
-            if (check.status() == SharedPlayerData.Status.NEEDS_CREATION_CONFIRMATION) {
-                CompletableFuture<MissingPlayerDataConfirmation.Decision> decision = new CompletableFuture<>();
-                Minecraft.getInstance().execute(() -> Minecraft.getInstance().setScreen(new ConfirmScreen(confirmed -> {
-                    show(parent, "recovering", true, null);
-                    decision.complete(confirmed ? MissingPlayerDataConfirmation.Decision.CREATE : MissingPlayerDataConfirmation.Decision.CANCEL);
-                }, Component.translatable("worldrelay.creation.player_title"), Component.translatable("worldrelay.creation.player_message"))));
-                if (playerData.requestCreation(profile, request -> decision).toCompletableFuture().get()
-                    != MissingPlayerDataConfirmation.Decision.CREATE) throw new IOException("Player creation cancelled");
-            }
         }
 
         private void openExisting() {
@@ -595,9 +573,6 @@ public final class SharedWorldCreation {
                     Files.createDirectory(target);
                     worldDirectory = target;
                     LocalWorldSessionStore.atomicWrite(target.resolve(SharedPlayerData.MARKER_FILE), "");
-                    new SharedPlayerData(target).requestCreation(profile,
-                            request -> CompletableFuture.completedFuture(MissingPlayerDataConfirmation.Decision.CREATE))
-                        .toCompletableFuture().get();
                     save(session.with(LocalWorldSession.Stage.STARTED, folder));
                     Minecraft.getInstance().execute(() -> {
                         resuming = true;

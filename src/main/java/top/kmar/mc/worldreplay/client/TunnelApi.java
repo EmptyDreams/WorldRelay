@@ -23,12 +23,13 @@ final class TunnelApi {
     private TunnelApi() {
     }
 
-    static Ticket ticket(ClientConnectionSettings settings, String user, String world, LocalWorldSession owner, boolean consent) throws IOException {
+    static Ticket ticket(ClientConnectionSettings settings, String user, String world, LocalWorldSession owner) throws IOException {
         URI api = settings.serverUri();
         JsonObject request = owner == null ? new JsonObject() : WorldOwnershipClient.identity(owner);
         request.addProperty("role", owner == null ? "join" : "host");
         request.addProperty("worldId", world);
-        if (owner == null) request.addProperty("allowNewPlayer", consent);
+        // 兼容已有协调服务的票据格式；玩家数据按原版规则自动初始化。
+        if (owner == null) request.addProperty("allowNewPlayer", true);
         try {
             JsonObject body = JsonParser.parseString(WorldOwnershipClient.post(settings, user, "tunnel-ticket", request, false)).getAsJsonObject();
             String token = ClientJson.requiredString(body, "ticket");

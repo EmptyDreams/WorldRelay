@@ -14,7 +14,6 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
-import top.kmar.mc.worldreplay.WorldRelay;
 import top.kmar.mc.worldreplay.playerdata.SharedPlayerData;
 import top.kmar.mc.worldreplay.playerdata.TunnelPlayerAccess;
 
@@ -42,12 +41,9 @@ public abstract class PlayerListMixin {
         return worldrelay$playerData().isSharedWorld() ? null : worldData.getLoadedPlayerTag();
     }
 
-    /**
-     * 在原版登录检查通过后、玩家进入世界前检查共享玩家数据；缺失且未获创建许可，
-     * 或文件无法读取时拒绝加入，避免初始化空白数据并在后续保存时覆盖原进度。
-     */
+    /** 玩家数据由原版加载；只校验实际登录身份与已鉴权隧道一致。 */
     @Inject(method = "canPlayerLogin", at = @At("RETURN"), cancellable = true)
-    private void worldrelay$checkPlayerData(
+    private void worldrelay$checkTunnelIdentity(
         SocketAddress address, GameProfile profile,
         CallbackInfoReturnable<Component> callback
     ) {
@@ -60,18 +56,6 @@ public abstract class PlayerListMixin {
         }
         if (!TunnelPlayerAccess.matches(address, profile)) {
             callback.setReturnValue(Component.translatable("worldrelay.disconnect.tunnel_identity_mismatch"));
-            return;
-        }
-
-        SharedPlayerData.CheckResult result = playerData.check(profile.getId());
-        if (result.status() == SharedPlayerData.Status.NEEDS_CREATION_CONFIRMATION) {
-            if (!playerData.hasCreationApproval(profile.getId()) && !playerData.approveTunnelCreation(address, profile)) {
-                callback.setReturnValue(Component.translatable("worldrelay.disconnect.player_data_confirmation_required"));
-            }
-        } else if (result.status() == SharedPlayerData.Status.ERROR) {
-            WorldRelay.LOGGER.error("Cannot admit player {} to shared world {}: {}", profile.getId(),
-                result.request().worldDirectory(), result.detail(), result.cause());
-            callback.setReturnValue(Component.translatable("worldrelay.disconnect.player_data_unreadable"));
         }
     }
 

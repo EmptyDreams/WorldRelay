@@ -182,21 +182,21 @@ dependencies {
     // http://www.gradle.org/docs/current/userguide/dependency_management.html
 }
 
+// 玩家存档回归与可选兼容测试只替换运行环境，实际执行 Minecraft / 模组的加载方法。
+def fixtureAgent = configurations.create('fixtureAgent')
+dependencies {
+    testImplementation 'org.mockito:mockito-core:5.24.0'
+    add('fixtureAgent', 'org.mockito:mockito-core:5.24.0') { transitive = false }
+}
+tasks.named('test', Test).configure {
+    // 显式安装官方测试 agent，避免 JDK 运行时自附加及对应警告。
+    jvmArgs "-javaagent:${fixtureAgent.asPath}", '-Xshare:off'
+}
+
 // 可选模组的发布类测试单独启用；普通回归保持未安装这些模组的环境。
 def createTests = providers.gradleProperty('createTests').getOrElse('false').toBoolean()
 def ipnTestMods = providers.gradleProperty('ipnTestMods')
 def jeiTestMods = providers.gradleProperty('jeiTestMods')
-if (createTests || ipnTestMods.isPresent() || jeiTestMods.isPresent()) {
-    def fixtureAgent = configurations.create('fixtureAgent')
-    dependencies {
-        testImplementation 'org.mockito:mockito-core:5.24.0'
-        add('fixtureAgent', 'org.mockito:mockito-core:5.24.0') { transitive = false }
-    }
-    tasks.named('test', Test).configure {
-        // 显式安装官方测试 agent，避免 JDK 运行时自附加及对应警告。
-        jvmArgs "-javaagent:${fixtureAgent.asPath}", '-Xshare:off'
-    }
-}
 
 if (createTests) {
     sourceSets.test.java.srcDir('src/createTest/java')
