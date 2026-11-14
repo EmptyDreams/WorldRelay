@@ -59,6 +59,7 @@ class MemoryOpListTest {
         ops.add(new ServerOpListEntry(profile, 3, true));
         ops.save();
         ops.load();
+        //noinspection DataFlowIssue
         assertEquals(3, ops.get(profile).getLevel());
         assertTrue(ops.canBypassPlayerLimit(profile));
         ops.remove(profile);
