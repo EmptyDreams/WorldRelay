@@ -1,4 +1,4 @@
-"""检查四个发布包中的服务端、管理端、权限、说明与校验信息。"""
+"""检查组合发布包和独立程序的内容、权限、说明与校验信息。"""
 
 import hashlib
 import importlib.util
@@ -40,8 +40,10 @@ class PackageReleaseTest(unittest.TestCase):
             outputs = release.package(self.fixtures(root), root / "release")
             self.assertEqual({path.name for path in outputs}, {
                 "worldrelay-linux-arm64.tar.gz", "worldrelay-linux-x64.tar.gz",
-                "worldrelay-jar-linux-arm64.tar.gz", "worldrelay-jar-linux-x64.tar.gz"})
-            for path in outputs:
+                "worldrelay-jar-linux-arm64.tar.gz", "worldrelay-jar-linux-x64.tar.gz",
+                "worldrelay-server.jar", "worldrelay-admin-linux-arm64", "worldrelay-admin-linux-x64",
+                "worldrelay-server-linux-arm64", "worldrelay-server-linux-x64"})
+            for path in (path for path in outputs if path.name.endswith(".tar.gz")):
                 arch = "arm64" if "arm64" in path.name else "x64"
                 with self.subTest(package=path.name), tarfile.open(path) as archive:
                     self.assertEqual(archive.extractfile("worldrelay-admin").read(), f"admin-{arch}".encode())
@@ -59,6 +61,30 @@ class PackageReleaseTest(unittest.TestCase):
             for line in (root / "release/SHA256SUMS").read_text().splitlines():
                 digest, name = line.split()
                 self.assertEqual(digest, hashlib.sha256((root / "release" / name).read_bytes()).hexdigest())
+
+    # 独立下载的 JAR、服务端和管理端与组合包内容一致，均有可验证的 SHA-256 摘要。
+    def test_standalone_programs_match_bundles_and_have_checksums(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            destination = root / "release"
+            release.package(self.fixtures(root), destination)
+            jar = destination / "worldrelay-server.jar"
+            self.assertEqual(jar.read_bytes(), b"portable server jar")
+            release.verify_checksum(jar, destination / "SHA256SUMS")
+            for arch in ("arm64", "x64"):
+                server = destination / f"worldrelay-server-linux-{arch}"
+                self.assertEqual(server.read_bytes(), f"server-{arch}".encode())
+                release.verify_checksum(server, destination / "SHA256SUMS")
+                admin = destination / f"worldrelay-admin-linux-{arch}"
+                self.assertEqual(admin.read_bytes(), f"admin-{arch}".encode())
+                release.verify_checksum(admin, destination / "SHA256SUMS")
+                for edition in ("", "-jar"):
+                    with tarfile.open(destination / f"worldrelay{edition}-linux-{arch}.tar.gz") as archive:
+                        self.assertEqual(archive.extractfile("worldrelay-admin").read(), admin.read_bytes())
+                        if edition:
+                            self.assertEqual(archive.extractfile("worldrelay-server.jar").read(), jar.read_bytes())
+                        else:
+                            self.assertEqual(archive.extractfile("worldrelay-server").read(), server.read_bytes())
 
     # 校验不通过的输入不能继续组合，避免将损坏或混用的构建产物发布出去。
     def test_corrupt_input_prevents_packaging(self):

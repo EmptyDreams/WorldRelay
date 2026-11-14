@@ -216,7 +216,7 @@ jobs:
           if-no-files-found: ignore
 
   package:
-    name: Package server and admin bundles
+    name: Prepare server and admin release assets
     needs: [linux, admin]
     runs-on: ubuntu-22.04
     timeout-minutes: 10
@@ -242,17 +242,20 @@ jobs:
           name: worldrelay-server-jar
           path: release-inputs
 
-      - name: Verify inputs and package four distributions
+      - name: Verify inputs and prepare release assets
         run: |
           python3 -B .github/scripts/package-release.py --input-dir release-inputs --output-dir release-assets
 
-      - name: Upload release bundles
+      - name: Upload release assets
         uses: actions/upload-artifact@v7
         with:
           name: worldrelay-release
           path: |
             release-assets/worldrelay-linux-*.tar.gz
             release-assets/worldrelay-jar-linux-*.tar.gz
+            release-assets/worldrelay-server.jar
+            release-assets/worldrelay-server-linux-*
+            release-assets/worldrelay-admin-linux-*
             release-assets/SHA256SUMS
           if-no-files-found: error
 
@@ -269,7 +272,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ github.ref_name }}
     steps:
-      - name: Download release bundles
+      - name: Download release assets
         uses: actions/download-artifact@v8
         with:
           name: worldrelay-release
@@ -283,6 +286,11 @@ jobs:
             worldrelay-linux-x64.tar.gz
             worldrelay-jar-linux-arm64.tar.gz
             worldrelay-jar-linux-x64.tar.gz
+            worldrelay-server.jar
+            worldrelay-server-linux-arm64
+            worldrelay-server-linux-x64
+            worldrelay-admin-linux-arm64
+            worldrelay-admin-linux-x64
           )
           for asset in "${assets[@]}"; do test -s "$asset"; done
           sha256sum -c SHA256SUMS

@@ -1,4 +1,4 @@
-"""将服务端与管理终端的构建产物组合为分架构的原生版、JAR 版发布包。"""
+"""组合分架构发布包，同时提供可单独下载的服务端、管理终端和 JAR。"""
 
 import argparse
 import hashlib
@@ -61,7 +61,7 @@ def package(input_dir, output_dir):
     launcher = Path(__file__).resolve().parents[1] / "release/worldrelay-server"
     jar = (input_dir / "worldrelay-server.jar").read_bytes()
     output_dir.mkdir(parents=True, exist_ok=True)
-    packages = []
+    assets = []
     for arch in architectures:
         native = server_files(input_dir / f"worldrelay-server-linux-{arch}.tar.gz")
         with tarfile.open(input_dir / f"worldrelay-admin-linux-{arch}.tar.gz", "r:gz") as archive:
@@ -75,11 +75,19 @@ def package(input_dir, output_dir):
                             (f"worldrelay-jar-linux-{arch}.tar.gz", jar_files)):
             destination = output_dir / name
             write_archive(destination, files)
-            packages.append(destination)
+            assets.append(destination)
+        for program, (data, mode) in (("server", native["worldrelay-server"]), ("admin", admin)):
+            standalone = output_dir / f"worldrelay-{program}-linux-{arch}"
+            standalone.write_bytes(data)
+            standalone.chmod(mode)
+            assets.append(standalone)
 
-    lines = [f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n" for path in packages]
+    standalone_jar = output_dir / "worldrelay-server.jar"
+    standalone_jar.write_bytes(jar)
+    assets.append(standalone_jar)
+    lines = [f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n" for path in assets]
     (output_dir / "SHA256SUMS").write_text("".join(lines), encoding="ascii")
-    return packages
+    return assets
 
 
 def main():
