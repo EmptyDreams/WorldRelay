@@ -34,8 +34,11 @@ SERVICE_USER="worldrelay"           # 新建的专用账户名
 DEPLOY_DIR="/home/$SERVICE_USER"    # 新账户的主目录和部署目录
 REPO="EmptyDreams/WorldRelay"
 
+# 确认版本已填写，部署目录尚不存在。
 [[ "$VERSION" != "x.y.z" ]] || { printf '请先填写 VERSION\n' >&2; exit 1; }
 test ! -e "$DEPLOY_DIR"
+
+# 根据 CPU 架构和版本类型选择发布包。
 case "$(uname -m)" in
   x86_64) ARCH="x64" ;;
   aarch64|arm64) ARCH="arm64" ;;
@@ -48,6 +51,7 @@ case "$EDITION" in
 esac
 URL="https://github.com/$REPO/releases/download/server-v$VERSION"
 
+# 检查部署所需工具；JAR 版还需 Java。
 sudo sh -c '
 for tool in curl tar sha256sum rsync rrsync python3 nano systemctl useradd usermod install chown tee ln; do
   command -v "$tool" >/dev/null || { printf "缺少工具：%s，请先自行安装\n" "$tool" >&2; exit 1; }
@@ -57,19 +61,25 @@ test -x /usr/sbin/sshd || { printf "缺少 OpenSSH 服务端，请先自行安�
 if [[ "$EDITION" == jar ]]; then
   sudo sh -c 'command -v java >/dev/null' || { printf '请先准备 Java 21+\n' >&2; exit 1; }
 fi
+
+# 创建专用账户和部署目录，禁用账户密码。
 sudo useradd --system --user-group --home-dir "$DEPLOY_DIR" --shell /bin/sh "$SERVICE_USER"
 sudo usermod --password '*' "$SERVICE_USER"
 sudo install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 755 "$DEPLOY_DIR"
 
+# 下载包含服务端和管理终端的发布包，校验后解压。
 sudo curl -fL "$URL/$ASSET" -o "$DEPLOY_DIR/$ASSET"
 sudo curl -fL "$URL/SHA256SUMS" -o "$DEPLOY_DIR/SHA256SUMS"
 cd "$DEPLOY_DIR"
 sudo sha256sum --check --ignore-missing SHA256SUMS
 sudo tar --no-same-owner -xzf "$ASSET"
+
+# 生成配置和运行目录，准备管理终端状态目录并设置权限。
 sudo -H -u "$SERVICE_USER" ./worldrelay-server --config
 sudo install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 700 "$DEPLOY_DIR/state"
 sudo chown root:root "$DEPLOY_DIR"
 
+# 限制专用账户的 SSH 登录方式，仅用于受限文件传输。
 sudo tee "$DEPLOY_DIR/sshd-worldrelay.conf" >/dev/null <<EOF
 Match User $SERVICE_USER
     AuthenticationMethods publickey
@@ -82,11 +92,14 @@ Match User $SERVICE_USER
     PermitUserRC no
 Match all
 EOF
+
+# 接入并检查 SSH 配置，确认通过后重新加载。
 sudo ln -s "$DEPLOY_DIR/sshd-worldrelay.conf" /etc/ssh/sshd_config.d/00-worldrelay.conf
 sudo /usr/sbin/sshd -t
 sudo systemctl enable --now ssh
 sudo systemctl reload ssh
 
+# 注册后台服务，指定运行账户、目录和异常重启方式。
 sudo tee /etc/systemd/system/worldrelay.service >/dev/null <<EOF
 [Unit]
 Description=WorldRelay Server
@@ -105,22 +118,33 @@ UMask=0077
 [Install]
 WantedBy=multi-user.target
 EOF
-
-# 按配置文件中的中文注释修改，至少确认 SSH 公网地址、端口及 rrsync 路径。
-sudo nano "$DEPLOY_DIR/server.properties"
-sudo systemctl daemon-reload
-sudo systemctl enable --now worldrelay
-sudo systemctl status worldrelay --no-pager
 )
 ```
 
-之后修改配置使用 `sudo nano /home/worldrelay/server.properties`，重启使用 `sudo systemctl restart worldrelay`，查看日志使用 `sudo journalctl -u worldrelay -f`。自定义目录时替换上述路径。
+安装成功之后配置文件在 `$DEPLOY_DIR/server.properties` 目录下，编辑后重启服务器即可生效，常用管理命令：
 
-管理终端使用 `sudo -H -u worldrelay /home/worldrelay/worldrelay-admin`，自动读取同目录的 `server.properties` 获取管理端口。账户名和路径按实际部署替换。
+```bash
+# 重载 systemd 配置
+sudo systemctl daemon-reload
+# 设置开机自启
+sudo systemctl enable worldrelay
+# 禁用开机自启
+sudo systemctl disable worldrelay
+# 检查服务状态
+sudo systemctl status worldrelay --no-pager
+# 启动服务
+sudo systemctl start worldrelay
+# 停止服务
+sudo systemctl stop worldrelay
+# 重启服务
+sudo systemctl restart worldrelay
+```
+
+管理终端使用 `sudo -H -u <username> /home/<username>/<...>/worldrelay-admin`，自动读取同目录的 `server.properties` 获取管理端口。账户名和路径按实际部署替换。
 
 ## 无 sudo：在当前账户目录部署
 
-需要管理员已为当前账户启用 SSH 公钥登录，并预装 `curl`、`rsync`、`rrsync`、`python3`。此方式使用 `nohup` 后台运行，机器重启后需要重新启动程序。
+需要管理员已为当前账户启用 SSH 公钥登录，并预装 `curl`、`rsync`、`rrsync`。
 
 ```bash
 (
@@ -130,11 +154,16 @@ EDITION="native"                    # native 或 jar；JAR 版先准备 Java 21+
 DEPLOY_DIR="$HOME/worldrelay"       # 当前账户内的新部署目录
 REPO="EmptyDreams/WorldRelay"
 
+# 确认版本已填写，部署目录尚不存在。
 [[ "$VERSION" != "x.y.z" ]] || { printf '请先填写 VERSION\n' >&2; exit 1; }
 test ! -e "$DEPLOY_DIR"
+
+# 检查所需工具，缺少时先自行安装。
 for tool in curl tar sha256sum rsync rrsync python3; do
   command -v "$tool" >/dev/null || { printf '缺少工具：%s\n' "$tool" >&2; exit 1; }
 done
+
+# 根据 CPU 架构和版本类型选择发布包。
 case "$(uname -m)" in
   x86_64) ARCH="x64" ;;
   aarch64|arm64) ARCH="arm64" ;;
@@ -145,29 +174,38 @@ case "$EDITION" in
   jar) ASSET="worldrelay-jar-linux-$ARCH.tar.gz" ;;
   *) printf 'EDITION 只能填写 native 或 jar\n' >&2; exit 1 ;;
 esac
+
+# JAR 版需先确认 Java 可用。
 if [[ "$EDITION" == jar ]]; then
   command -v java >/dev/null || { printf '请先准备 Java 21+\n' >&2; exit 1; }
 fi
 URL="https://github.com/$REPO/releases/download/server-v$VERSION"
 
+# 创建部署目录，新文件默认仅当前账户可访问。
 umask 077
 mkdir -p "$DEPLOY_DIR"
 cd "$DEPLOY_DIR"
+
+# 下载包含服务端和管理终端的发布包，校验后解压。
 curl -fL "$URL/$ASSET" -o "$ASSET"
 curl -fL "$URL/SHA256SUMS" -o SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS
 tar -xzf "$ASSET"
+
+# 生成完整配置和运行目录。
 ./worldrelay-server --config
+
 # 自动填入当前账户能找到的 rrsync 路径。
 sed -i "s|^ssh.rrsync-command=.*|ssh.rrsync-command=$(command -v rrsync)|" server.properties
-
-# 打开编辑器，按中文注释修改配置；保存退出后启动。
-"${EDITOR:-vi}" server.properties
-nohup ./worldrelay-server >server.log 2>&1 &
-printf '%s\n' "$!" >server.pid
 )
 ```
 
-之后在部署目录中修改 `server.properties`；停止使用 `kill "$(cat server.pid)"`，等待退出后再启动，启动命令为 `nohup ./worldrelay-server >server.log 2>&1 & echo $! >server.pid`，查看日志使用 `tail -f server.log`。
+安装成功后编辑部署目录中的 `server.properties` 并重启服务器即可让新配置生效，可以用 `nohup` 或其它方式启动服务器，例如：
+
+```bash
+# 后台启动服务，保存日志和进程号以便后续查看、停止。
+nohup ./worldrelay-server >server.log 2>&1 &
+printf '%s\n' "$!" >server.pid
+```
 
 管理终端运行 `./worldrelay-admin`，自动读取程序同目录的 `server.properties` 获取管理端口。
