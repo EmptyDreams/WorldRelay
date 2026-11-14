@@ -142,7 +142,7 @@ sudo systemctl stop worldrelay
 sudo systemctl restart worldrelay
 ```
 
-管理终端使用 `sudo -H -u <username> /home/<username>/<...>/worldrelay-admin`，自动读取同目录的 `server.properties` 获取管理端口。账户名和路径按实际部署替换。
+管理终端使用 `sudo -H -u <username> /home/<username>/worldrelay-admin`，自动读取同目录的 `server.properties` 获取管理端口。账户名和路径按实际部署替换。
 
 ## 无 sudo：在当前账户目录部署
 

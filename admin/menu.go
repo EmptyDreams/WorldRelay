@@ -39,13 +39,6 @@ func (m model) menuItems() []menuItem {
 	case formScreen, confirmScreen:
 		return nil
 	case resultScreen:
-		if _, ok := m.result["token"].(string); ok {
-			label := "显示 Token"
-			if m.reveal {
-				label = "隐藏 Token"
-			}
-			return []menuItem{item(label, "toggle-token", true), item("返回", "back", true)}
-		}
 		return []menuItem{item("返回", "back", true)}
 	case operationScreen:
 		if m.pending != nil {
@@ -181,15 +174,13 @@ func (m *model) performMenuAction(action string) tea.Cmd {
 		return m.returnToParent()
 	case "refresh":
 		return m.load()
-	case "toggle-token":
-		m.reveal = !m.reveal
 	case "retry":
 		if m.pending != nil {
 			return m.request(m.pending.Path, m.pending.Body, "execute")
 		}
 	case "create-user":
 		if m.canMutate() {
-			return m.openForm("create-user", "创建玩家账户", "输入玩家名称；成功后可查看 Token。", "")
+			return m.openForm("create-user", "创建玩家账户", "输入玩家名称；成功后直接显示 Token，可鼠标选中复制。", "")
 		}
 	case "toggle-user", "reset-token":
 		if len(m.users) == 0 || !m.canMutate() {

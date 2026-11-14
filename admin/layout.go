@@ -291,11 +291,7 @@ func (m model) content() string {
 		return card("已确认 / "+clean(m.pending.Title), width, m.operationFields(m.pending), 0) + "\n" + card("重试与退出", width, []string{"选择下方重试按钮，使用同一个操作编号查询或重试。", "原请求已保存在本机，退出后再次启动可继续。", "恢复返回 202 时自动查询；关闭工具不取消任务。"}, 0)
 	case resultScreen:
 		if token, ok := m.result["token"].(string); ok {
-			value := muted.Render("（已隐藏，选择下方显示按钮查看）")
-			if m.reveal {
-				value = clean(token)
-			}
-			return card("账户操作成功", width, []string{field("玩家", text(m.result, "username"))}, 0) + "\n" + card("Token", width, []string{value}, 0) + "\n" + muted.Render("请及时复制并妥善保存；离开此页后清除，Token 不写入文件。")
+			return card("账户操作成功", width, []string{field("玩家", text(m.result, "username"))}, 0) + "\n" + card("Token", width, []string{clean(token)}, 0) + "\n" + muted.Render("鼠标选中 Token 后使用终端的复制功能。") + "\n" + muted.Render("请妥善保存；离开此页后清除显示，Token 不写入文件。")
 		}
 		if w := obj(m.result, "world"); w != nil {
 			return successStyle.Render("✓ 世界已更新") + "\n" + m.worldDetail(w, obj(m.result, "tasks"))

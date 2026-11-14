@@ -64,7 +64,6 @@ type model struct {
 	pending                                 *operation
 	result                                  object
 	resultBack                              screen
-	reveal                                  bool
 	reason, notice                          string
 	busy                                    bool
 	serial                                  uint64
@@ -133,8 +132,18 @@ func (m *model) load() tea.Cmd {
 }
 
 func (m *model) navigate(to screen) tea.Cmd {
-	m.screen, m.scroll, m.result, m.reveal, m.notice = to, 0, nil, false, ""
-	return m.load()
+	selectingToken := m.showingToken()
+	m.screen, m.scroll, m.result, m.notice = to, 0, nil, ""
+	cmd := m.load()
+	if selectingToken {
+		return tea.Batch(tea.EnableMouseCellMotion, cmd)
+	}
+	return cmd
+}
+
+func (m model) showingToken() bool {
+	token, ok := m.result["token"].(string)
+	return m.screen == resultScreen && ok && token != ""
 }
 
 func (m *model) openForm(kind, title, hint, value string) tea.Cmd {
@@ -254,7 +263,7 @@ func (m *model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.resultBack = m.operationBack
 				m.pending = nil
 			}
-			m.screen, m.result, m.scroll, m.reveal = resultScreen, r, 0, false
+			m.screen, m.result, m.scroll = resultScreen, r, 0
 		case "mutation":
 			if m.screen == formScreen && m.form.kind == "rename" {
 				m.world, m.worldPane = obj(r, "world"), false
@@ -271,9 +280,13 @@ func (m *model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.screen == confirmScreen {
 				m.resultBack = m.confirmation.back
 			}
-			m.screen, m.result, m.scroll, m.reveal = resultScreen, r, 0, false
+			m.screen, m.result, m.scroll = resultScreen, r, 0
 		}
 		m.clampCursor()
+		if m.showingToken() {
+			// 让终端接管拖选；此页不自动刷新，避免选中的 Token 被重绘打断。
+			return m, tea.DisableMouse
+		}
 		return m, nil
 	case worldDetailMsg:
 		if m.screen != worldsScreen || msg.sequence != m.worldDetailSeq || msg.worldID != text(m.selectedWorld(), "worldId") {

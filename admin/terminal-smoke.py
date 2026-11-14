@@ -25,6 +25,8 @@ def main():
     args = parser.parse_args()
     worlds = [{"worldId": "pty-world", "name": "PTY世界", "status": "FREE", "allowOfflinePlayers": False}]
     created = []
+    users = []
+    token = "pty-token-" + "a" * 48
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -40,12 +42,22 @@ def main():
 
         def do_GET(self):
             if self.path.endswith("/status"):
-                self.respond({"version": "terminal-fixture", "uptimeMillis": 1000, "worlds": len(worlds), "ownedWorlds": 0, "users": 0, "onlineUsers": 0})
+                self.respond({"version": "terminal-fixture", "uptimeMillis": 1000, "worlds": len(worlds), "ownedWorlds": 0, "users": len(users), "onlineUsers": 0})
+            elif self.path.endswith("/users"):
+                self.respond({"users": users})
             else:
                 self.respond({"worlds": worlds})
 
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if self.path == "/api/v1/register":
+                if request != {"username": "PTY玩家"}:
+                    self.respond({"code": "INVALID_USER"}, 400)
+                    return
+                user = {"username": request["username"], "enabled": True, "transferAuthorizations": 0}
+                users.append(user)
+                self.respond(dict(user, token=token), 201)
+                return
             if self.path == "/api/v1/worlds/detail":
                 self.respond({"world": next(world for world in worlds if world["worldId"] == request["worldId"]), "storage": {"currentBytes": 1024}})
                 return
@@ -201,6 +213,28 @@ def main():
                 expect("PTY正版世界", list_start)
                 os.write(master, b"\x1b")
                 expect("服务概览")
+                # 创建后直接显示完整 Token，关闭鼠标捕获供本地拖选，返回后恢复列表滚轮。
+                users_start = len(captured)
+                os.write(master, b"\x1b[C\r")
+                expect("用户管理 / 玩家账户", users_start)
+                form_start = len(captured)
+                os.write(master, b"\r")
+                expect("创建玩家账户", form_start)
+                os.write(master, "PTY玩家".encode())
+                expect("PTY玩家", form_start)
+                result_start = len(captured)
+                os.write(master, b"\r")
+                expect(token, result_start)
+                expect("\x1b[?1002l", result_start)
+                expect("\x1b[?1006l", result_start)
+                users_start = len(captured)
+                os.write(master, b"\x1b")
+                expect("用户管理 / 玩家账户", users_start)
+                expect("\x1b[?1002h", users_start)
+                expect("\x1b[?1006h", users_start)
+                home_start = len(captured)
+                os.write(master, b"\x1b")
+                expect("服务概览", home_start)
                 os.write(master, b"\x1b[F")
                 expect("▸退出")
                 os.write(master, b"\r")
@@ -216,7 +250,7 @@ def main():
                         process.kill()
                         process.wait()
                 os.close(master)
-        print("Terminal smoke passed: read-only check, overview, mouse wheel, cursor navigation, Chinese input, fixed login modes, ESC return and menu exit")
+        print("Terminal smoke passed: read-only check, overview, mouse wheel, cursor navigation, Chinese input, fixed login modes, selectable Token, ESC return and menu exit")
     finally:
         server.shutdown()
         server.server_close()

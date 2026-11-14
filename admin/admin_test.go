@@ -92,7 +92,17 @@ func complete(t *testing.T, m *model, cmd tea.Cmd) tea.Cmd {
 	if cmd == nil {
 		t.Fatal("预期产生后台请求")
 	}
-	_, next := m.Update(cmd())
+	message := cmd()
+	if commands, ok := message.(tea.BatchMsg); ok {
+		var next []tea.Cmd
+		for _, command := range commands {
+			if command != nil {
+				next = append(next, complete(t, m, command))
+			}
+		}
+		return tea.Batch(next...)
+	}
+	_, next := m.Update(message)
 	for m.screen == worldsScreen && (m.worldLoading || m.busy) && next != nil {
 		_, next = m.Update(next())
 	}
@@ -434,12 +444,8 @@ func TestWorldAndUserManagement(t *testing.T) {
 	openUsersFromWorlds(t, m)
 	choosePageAction(t, m, "create-user")
 	complete(t, m, submitValue(t, m, "Player"))
-	if strings.Contains(m.View(), token) {
-		t.Fatal("默认泄露 Token")
-	}
-	choosePageAction(t, m, "toggle-token")
 	if !strings.Contains(m.View(), token) {
-		t.Fatal("无法查看新 Token")
+		t.Fatal("创建成功后没有直接显示完整 Token")
 	}
 	complete(t, m, key(m, "esc"))
 	if m.result != nil || strings.Contains(m.View(), token) {
@@ -455,6 +461,9 @@ func TestWorldAndUserManagement(t *testing.T) {
 	}
 	choosePageAction(t, m, "reset-token")
 	complete(t, m, submitValue(t, m, "Player"))
+	if !strings.Contains(m.View(), token) {
+		t.Fatal("重置成功后没有直接显示完整 Token")
+	}
 	paths := map[string]int{}
 	for _, r := range f.requests {
 		paths[r.path]++
