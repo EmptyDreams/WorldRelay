@@ -9,6 +9,8 @@ import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.UUID;
+import java.util.Map;
+import top.kmar.worldrelay.permissions.OperatorPolicy;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -59,8 +61,9 @@ class MemoryOpListTest {
         ops.add(new ServerOpListEntry(profile, 3, true));
         ops.save();
         ops.load();
-        //noinspection DataFlowIssue
-        assertEquals(3, ops.get(profile).getLevel());
+        var entry = ops.get(profile);
+        assertNotNull(entry);
+        assertEquals(3, entry.getLevel());
         assertTrue(ops.canBypassPlayerLimit(profile));
         ops.remove(profile);
         ops.save();
@@ -81,6 +84,38 @@ class MemoryOpListTest {
         next.load();
         assertTrue(next.isEmpty());
         assertFalse(Files.exists(parent));
+    }
+
+    /** 同一中心账号适配实际正版／离线 UUID；撤销、降级和旧版本拒绝都只修改内存。 */
+    @Test
+    void appliesAuthoritativePoliciesToActualProfilesWithoutDiskAccess() {
+        File file = mock(File.class, invocation -> { throw new AssertionError("OP file accessed"); });
+        var ops = new MemoryOpList(file);
+        assertTrue(ops.apply(new OperatorPolicy(1, Map.of(profile.getName(), 2))));
+        var onlineEntry = ops.get(profile);
+        assertNotNull(onlineEntry);
+        assertEquals(2, onlineEntry.getLevel());
+        var offline = new GameProfile(UUID.randomUUID(), profile.getName());
+        var offlineEntry = ops.get(offline);
+        assertNotNull(offlineEntry);
+        assertEquals(2, offlineEntry.getLevel());
+        var outsider = new GameProfile(UUID.randomUUID(), "Other");
+        var extra = new ServerOpListEntry(outsider, 4, false);
+        ops.add(extra);
+        assertNull(ops.get(outsider));
+        assertFalse(ops.getEntries().contains(extra));
+        assertFalse(ops.canBypassPlayerLimit(outsider));
+        assertTrue(ops.apply(new OperatorPolicy(2, Map.of(profile.getName(), 1))));
+        var downgraded = ops.get(profile);
+        assertNotNull(downgraded);
+        assertEquals(1, downgraded.getLevel());
+        assertFalse(ops.apply(new OperatorPolicy(1, Map.of(profile.getName(), 4))));
+        assertSame(downgraded, ops.get(profile));
+        assertTrue(ops.apply(new OperatorPolicy(3, Map.of())));
+        assertNull(ops.get(profile));
+        assertNull(ops.get(offline));
+        assertTrue(ops.isEmpty());
+        verifyNoInteractions(file);
     }
 
 }

@@ -3,6 +3,7 @@ package top.kmar.worldrelay.server.http;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import top.kmar.worldrelay.server.auth.UserStore;
+import top.kmar.worldrelay.server.auth.OperatorStore;
 import top.kmar.worldrelay.server.json.JsonWriter;
 import top.kmar.worldrelay.server.tunnel.TunnelGateway;
 import top.kmar.worldrelay.server.world.WorldAccessException;
@@ -10,6 +11,7 @@ import top.kmar.worldrelay.server.world.WorldStore;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Objects;
 import java.util.Set;
 
 /** 账号状态只作用于访问资格，不自动撤销世界所有权。 */
@@ -22,13 +24,15 @@ public final class UserManagementHandler implements HttpHandler {
     private final TransferJobs jobs;
     private final WorldStore worlds;
     private final Action action;
+    private final OperatorStore operators;
 
-    public UserManagementHandler(UserStore users, WorldStore worlds, TunnelGateway tunnels, TransferJobs jobs, Action action) {
+    public UserManagementHandler(UserStore users, WorldStore worlds, TunnelGateway tunnels, TransferJobs jobs, Action action, OperatorStore operators) {
         this.users = users;
         this.worlds = worlds;
         this.tunnels = tunnels;
         this.jobs = jobs;
         this.action = action;
+        this.operators = Objects.requireNonNull(operators);
     }
 
     @Override
@@ -37,11 +41,17 @@ public final class UserManagementHandler implements HttpHandler {
         try {
             var writer = new JsonWriter();
             if (action == Action.LIST) {
+                var policy = operators.snapshot();
                 writer.beginObject().name("users").beginArray();
                 for (var account : users.list()) {
-                    write(writer, account);
+                    writer.beginObject().name("username").value(account.username()).name("enabled").value(account.enabled())
+                        .name("transferAuthorizations").value(account.transferAuthorizations());
+                    writer.name("opLevel").value(policy.operators().getOrDefault(account.username(), 0));
+                    writer.endObject();
                 }
-                writer.endArray().endObject();
+                writer.endArray();
+                writer.name("operatorRevision").value(policy.revision());
+                writer.endObject();
             } else {
                 var body = AdminRequests.read(exchange, Set.of("username"), Set.of());
                 String username = AdminRequests.string(body, "username");

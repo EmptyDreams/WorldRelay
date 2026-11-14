@@ -238,9 +238,13 @@ func (m model) content() string {
 			if flagValue(u, "enabled") {
 				status = "● 启用"
 			}
-			data = append(data, []string{text(u, "username"), status, text(u, "transferAuthorizations")})
+			level := "无"
+			if integer(u, "opLevel") > 0 {
+				level = text(u, "opLevel")
+			}
+			data = append(data, []string{text(u, "username"), status, level, text(u, "transferAuthorizations")})
 		}
-		return m.table([]string{"玩家名称", "状态", "传输授权"}, data, []int{5, 3, 3})
+		return m.table([]string{"玩家名称", "状态", "全局 OP", "传输授权"}, data, []int{5, 3, 3, 3})
 	case detailScreen:
 		return m.worldDetail(m.world, obj(m.detail, "tasks"))
 	case backupsScreen:
@@ -295,6 +299,9 @@ func (m model) content() string {
 		}
 		if w := obj(m.result, "world"); w != nil {
 			return successStyle.Render("✓ 世界已更新") + "\n" + m.worldDetail(w, obj(m.result, "tasks"))
+		}
+		if _, ok := m.result["operators"]; ok {
+			return card("全局 OP 配置已保存", width, []string{field("配置版本", text(m.result, "revision")), "所有共享世界共用此名单；在线房主下次同步后生效。", "断网房主无法立即收到权限变更。返回用户列表可查看最新等级。"}, 0)
 		}
 		return card("✓ 操作完成", width, resultFields(m.result), 0)
 	}

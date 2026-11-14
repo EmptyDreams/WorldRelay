@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -33,7 +34,7 @@ func (m model) menuItems() []menuItem {
 		if len(m.users) > 0 && flagValue(m.users[max(0, min(m.cursor[usersScreen], len(m.users)-1))], "enabled") {
 			label = "禁用账户"
 		}
-		return []menuItem{item("创建账户", "create-user", ready), item(label, "toggle-user", ready && len(m.users) > 0), item("重置 Token", "reset-token", ready && len(m.users) > 0), item("刷新", "refresh", ready), item("返回", "back", true)}
+		return []menuItem{item("创建账户", "create-user", ready), item(label, "toggle-user", ready && len(m.users) > 0), item("重置 Token", "reset-token", ready && len(m.users) > 0), item("设置 OP", "set-op", ready && len(m.users) > 0 && m.operatorRevision != nil), item("撤销 OP", "remove-op", ready && len(m.users) > 0 && m.operatorRevision != nil), item("刷新", "refresh", ready), item("返回", "back", true)}
 	case worldModeScreen:
 		return []menuItem{item("仅允许正版账号", "create-online-world", ready), item("允许离线账号", "create-offline-world", ready)}
 	case formScreen, confirmScreen:
@@ -182,6 +183,20 @@ func (m *model) performMenuAction(action string) tea.Cmd {
 		if m.canMutate() {
 			return m.openForm("create-user", "创建玩家账户", "输入玩家名称；成功后直接显示 Token，可鼠标选中复制。", "")
 		}
+	case "set-op", "remove-op":
+		if len(m.users) == 0 || m.operatorRevision == nil || !m.canMutate() {
+			return nil
+		}
+		user := m.users[m.cursor[usersScreen]]
+		m.operatorUser = text(user, "username")
+		if action == "remove-op" {
+			return m.request("operators/remove", object{"username": m.operatorUser, "expectedRevision": m.operatorRevision}, "operator-mutation")
+		}
+		level := integer(user, "opLevel")
+		if level < 1 {
+			level = 2
+		}
+		return m.openForm("set-op", "设置全局 OP / "+m.operatorUser, "输入 1–4；常用指令使用 2。所有共享世界共用，在线房主下次同步后生效。", strconv.FormatInt(level, 10))
 	case "toggle-user", "reset-token":
 		if len(m.users) == 0 || !m.canMutate() {
 			return nil

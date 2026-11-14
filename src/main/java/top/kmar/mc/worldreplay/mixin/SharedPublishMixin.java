@@ -21,6 +21,7 @@ public abstract class SharedPublishMixin {
         target = "Lnet/minecraft/client/server/IntegratedServer;initializeKeyPair()V"))
     private void worldrelay$loginPolicy(CallbackInfoReturnable<Boolean> callback) {
         var server = (MinecraftServer) (Object) this;
+        SharedWorldCreation.applyOperators(server);
         if (SharedWorldCreation.allowsOfflinePlayers(server)) {
             server.setUsesAuthentication(false);
             var owner = server.getSingleplayerProfile();

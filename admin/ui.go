@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -76,6 +77,8 @@ type model struct {
 	operationBack                           screen
 	newWorldName                            string
 	pageButtons                             map[screen]int
+	operatorRevision                        any
+	operatorUser                            string
 }
 
 func newModel(api *client, store journal, refresh time.Duration) *model {
@@ -183,7 +186,9 @@ func (m *model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.busy = false
 		if msg.err != nil {
 			m.notice = clean(msg.err.Error())
-			if msg.kind == "mutation" {
+			if msg.kind == "operator-mutation" {
+				m.notice += "；未自动重试，请返回用户列表刷新并核实 OP 等级。"
+			} else if msg.kind == "mutation" {
 				m.notice += "；未自动重试。创建结果请返回列表核实；未收到 Token 时可显式重置。"
 			}
 			if msg.kind == "execute" && m.pending != nil {
@@ -217,6 +222,7 @@ func (m *model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.loadWorldSelection()
 		case "users":
 			m.users = rows(r, "users")
+			m.operatorRevision = r["operatorRevision"]
 		case "detail":
 			m.detail, m.world = r, obj(r, "world")
 		case "backups":
@@ -264,7 +270,7 @@ func (m *model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.pending = nil
 			}
 			m.screen, m.result, m.scroll = resultScreen, r, 0
-		case "mutation":
+		case "mutation", "operator-mutation":
 			if m.screen == formScreen && m.form.kind == "rename" {
 				m.world, m.worldPane = obj(r, "world"), false
 				m.input.Blur()
@@ -414,6 +420,13 @@ func (m *model) submit() tea.Cmd {
 		return nil
 	case "create-user":
 		return m.request("register", object{"username": value}, "mutation")
+	case "set-op":
+		level, err := strconv.Atoi(value)
+		if err != nil || level < 1 || level > 4 {
+			m.notice = "OP 等级必须是 1 到 4。"
+			return nil
+		}
+		return m.request("operators/set", object{"username": m.operatorUser, "level": level, "expectedRevision": m.operatorRevision}, "operator-mutation")
 	case "rename":
 		return m.request("worlds/rename", object{"worldId": m.world["worldId"], "expectedName": m.world["name"], "name": value}, "mutation")
 	case "abandon":

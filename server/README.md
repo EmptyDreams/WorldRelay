@@ -1,5 +1,9 @@
 # WorldRelay 服务端
 
+全局 OP 名单由本机管理接口维护，持久保存在用户文件旁的 `<用户文件名>.operators.json`，独立于世界快照；最多 128 个账号。管理员通过 admin 用户管理页设置 1–4 级权限或撤销。共享世界客户端不读写本机 `ops.json`，启动前加载中心名单，运行中按心跳同步。正版与离线模式均使用实际登录的账号名匹配已注册账号，并以实际 Minecraft UUID 生成内存条目。
+
+管理监听器提供 `GET /api/v1/operators`、`POST /api/v1/operators/set`（`username`、`level`、`expectedRevision`）和 `POST /api/v1/operators/remove`（`username`、`expectedRevision`）。版本冲突返回 409，不覆盖新配置。业务监听器仅提供只读同步 `POST /api/v1/worlds/operators`，需要鉴权和当前房主的 `worldId`、`deviceId`、`sessionId`、`epoch`，以及 `appliedRevision`（首次为 -1）。响应携带任期与配置版本；版本相同返回 `unchanged:true`，否则返回完整名单。客户端与服务端须一并更新，首次拉取失败时保留所有权并阻止开服。
+
 **一台小服务器保存存档，朋友轮流当房主，同一个世界接着玩。**
 
 服务端提供存档交接、历史备份和连接转发，无需安装 Minecraft 服务端。原生版无需 Java，JAR 版需要 Java 21+。

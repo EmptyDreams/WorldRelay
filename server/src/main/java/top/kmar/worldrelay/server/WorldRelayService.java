@@ -2,6 +2,7 @@ package top.kmar.worldrelay.server;
 
 import top.kmar.worldrelay.server.auth.SshRegistrationConfig;
 import top.kmar.worldrelay.server.auth.UserStore;
+import top.kmar.worldrelay.server.auth.OperatorStore;
 import top.kmar.worldrelay.server.http.*;
 import top.kmar.worldrelay.server.tunnel.TunnelGateway;
 import top.kmar.worldrelay.server.world.WorldBackups;
@@ -19,6 +20,7 @@ public final class WorldRelayService implements AutoCloseable {
 
     private final ServerConfig config;
     private UserStore users;
+    private OperatorStore operators;
     private WorldStore worlds;
     private WorldRelayHttpServer api;
     private WorldRelayHttpServer registration;
@@ -51,6 +53,7 @@ public final class WorldRelayService implements AutoCloseable {
         try {
             config.createDirectories();
             users = userStoreFactory.open(config.usersFile(), config.ssh());
+            operators = OperatorStore.open(config.usersFile().resolveSibling(config.usersFile().getFileName() + ".operators.json"));
             worlds = WorldStore.open(config.worldsDirectory(), config.heartbeatIntervalSeconds(), config.heartbeatTimeoutSeconds());
             worlds.configureUsers(users::isEnabled);
             retention = new WorldRetention(worlds, config.ssh().transferDirectory(), config.retention());
@@ -68,8 +71,11 @@ public final class WorldRelayService implements AutoCloseable {
             for (var action : UserManagementHandler.Action.values()) {
                 registrationRouter.register(action == UserManagementHandler.Action.LIST ? "GET" : "POST",
                     "/api/v1/users" + (action == UserManagementHandler.Action.LIST ? "" : "/" + action.name().toLowerCase(java.util.Locale.ROOT)),
-                    new UserManagementHandler(users, worlds, tunnels, transferJobs, action));
+                    new UserManagementHandler(users, worlds, tunnels, transferJobs, action, operators));
             }
+            registrationRouter.register("GET", "/api/v1/operators", new OperatorHandler(operators, users, worlds, OperatorHandler.Action.LIST));
+            registrationRouter.register("POST", "/api/v1/operators/set", new OperatorHandler(operators, users, worlds, OperatorHandler.Action.SET));
+            registrationRouter.register("POST", "/api/v1/operators/remove", new OperatorHandler(operators, users, worlds, OperatorHandler.Action.REMOVE));
             registrationRouter.register("GET", "/api/v1/status", new ServerStatusHandler(config, users, worlds, tunnels, transferJobs));
             for (var action : WorldBackupHandler.Action.values()) {
                 registrationRouter.register("POST", "/api/v1/worlds/" + action.name().toLowerCase(java.util.Locale.ROOT).replace('_', '-'),
@@ -85,6 +91,7 @@ public final class WorldRelayService implements AutoCloseable {
             registration.start();
             tunnels.start();
             HttpRouter apiRouter = WorldRelayServer.createRouter(worlds, tunnels);
+            apiRouter.register("POST", "/api/v1/worlds/operators", new OperatorHandler(operators, users, worlds, OperatorHandler.Action.SYNC));
             apiRouter.register("POST", "/api/v1/worlds/tunnel-ticket", new TunnelTicketHandler(tunnels));
             var transfers = new WorldTransfers(worlds, users, config.ssh(), retention);
             for (WorldTransferHandler.Action action : WorldTransferHandler.Action.values()) {
@@ -134,28 +141,46 @@ public final class WorldRelayService implements AutoCloseable {
         }
         closed = true;
         try {
-            if (api != null) {
-                api.close();
-            }
+            closeListeners();
         } finally {
             try {
-                if (registration != null) {
-                    registration.close();
-                }
+                closeWorldResources();
+            } finally {
+                closeIdentityStores();
+            }
+        }
+    }
+
+    private void closeListeners() {
+        try {
+            if (api != null) api.close();
+        } finally {
+            if (registration != null) registration.close();
+        }
+    }
+
+    /** 单项关闭失败时也继续清理后续资源，启动失败回滚共用同一路径。 */
+    private void closeWorldResources() throws IOException {
+        try {
+            if (tunnels != null) tunnels.close();
+        } finally {
+            try {
+                if (transferJobs != null) transferJobs.close();
             } finally {
                 try {
-                    if (worlds != null) {
-                        if (tunnels != null) tunnels.close();
-                        if (transferJobs != null) transferJobs.close();
-                        if (retention != null) retention.close();
-                        worlds.close();
-                    }
+                    if (retention != null) retention.close();
                 } finally {
-                    if (users != null) {
-                        users.close();
-                    }
+                    if (worlds != null) worlds.close();
                 }
             }
+        }
+    }
+
+    private void closeIdentityStores() throws IOException {
+        try {
+            if (operators != null) operators.close();
+        } finally {
+            if (users != null) users.close();
         }
     }
 

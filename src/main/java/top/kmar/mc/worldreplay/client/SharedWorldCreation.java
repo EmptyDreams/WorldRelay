@@ -19,6 +19,8 @@ import net.neoforged.neoforge.event.server.ServerStoppedEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import top.kmar.mc.worldreplay.WorldRelay;
 import top.kmar.mc.worldreplay.playerdata.SharedPlayerData;
+import top.kmar.mc.worldreplay.permissions.MemoryOpList;
+import top.kmar.worldrelay.permissions.OperatorPolicy;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -159,6 +161,7 @@ public final class SharedWorldCreation {
                         var creation = new Creation(parent, user, settings, store, session, current.allowOfflinePlayers());
                         creation.worldDirectory = prepared.directory();
                         creation.storage = LevelStorageSource.createDefault(store.saves(session.epoch()));
+                        creation.loadOperators();
                         creation.save(session.with(LocalWorldSession.Stage.STARTED, session.folder()));
                         if (active != null) {
                             active.stopHeartbeat();
@@ -373,6 +376,8 @@ public final class SharedWorldCreation {
         private volatile boolean finishing;
         private volatile SharedWorldHost tunnelHost;
         private volatile boolean fenced;
+        private volatile OperatorPolicy operatorPolicy;
+        private volatile long appliedOperatorRevision = -1;
         private long nextHostAttempt;
         private long nextPlayerCount;
         private boolean finishScreenShown;
@@ -412,6 +417,7 @@ public final class SharedWorldCreation {
                     SharedWorldHost host = tunnelHost;
                     boolean republish = WorldOwnershipClient.heartbeat(settings, user, session, host == null ? null : host.players());
                     if (republish && host != null) host.republish();
+                    if (operatorPolicy != null && !finishing && !fenced) refreshOperators();
                 } catch (IOException failure) {
                     WorldRelay.LOGGER.warn("Shared world heartbeat failed; ownership is retained");
                 }
@@ -420,6 +426,24 @@ public final class SharedWorldCreation {
 
         private void stopHeartbeat() {
             if (heartbeat != null) heartbeat.cancel(false);
+        }
+
+        private void loadOperators() throws IOException {
+            operatorPolicy = OperatorClient.fetch(settings, user, session, -1);
+            if (operatorPolicy == null) throw new IOException("Initial operator policy is missing");
+        }
+
+        private void refreshOperators() throws IOException {
+            var next = OperatorClient.fetch(settings, user, session, appliedOperatorRevision);
+            if (next == null) return;
+            if (next.revision() < operatorPolicy.revision()) return;
+            operatorPolicy = next;
+            Minecraft.getInstance().execute(() -> {
+                var server = Minecraft.getInstance().getSingleplayerServer();
+                if (server != null) server.execute(() -> {
+                    if (matching(server) == this && !finishing && !fenced) applyOperators(server);
+                });
+            });
         }
 
         private void reuseLocalAndOpen() {
@@ -433,6 +457,7 @@ public final class SharedWorldCreation {
                     var prepared = LocalWorldReplacement.prepare(settings, user, session, store);
                     worldDirectory = prepared.directory();
                     storage = LevelStorageSource.createDefault(store.saves(session.epoch()));
+                    loadOperators();
                     save(session.with(LocalWorldSession.Stage.STARTED, source.folder()));
                     Minecraft.getInstance().execute(() -> {
                         busy = false;
@@ -467,6 +492,7 @@ public final class SharedWorldCreation {
                         throw new IOException("Unexpected start state");
                     }
                     storage = LevelStorageSource.createDefault(store.saves(session.epoch()));
+                    loadOperators();
                     save(session.with(LocalWorldSession.Stage.STARTED, session.folder()));
                     Minecraft.getInstance().execute(() -> {
                         busy = false;
@@ -567,6 +593,7 @@ public final class SharedWorldCreation {
                     save(session.with(LocalWorldSession.Stage.START_REQUESTED, folder));
                     var view = WorldOwnershipClient.command(settings, user, session, "ready", "SAVE_SYNCED");
                     if (view.hasSave() || !view.phase().equals("STARTING")) throw new IOException("Unexpected start state");
+                    loadOperators();
                     Path target = storage.getBaseDir().resolve(folder).normalize();
                     if (!target.getParent().equals(storage.getBaseDir())) throw new IOException("Invalid world path");
                     // CREATE_DIRECTORY 而非复用：部分生成或恢复副本绝不能被新建覆盖。
@@ -697,6 +724,20 @@ public final class SharedWorldCreation {
         return matching(server) != null;
     }
 
+    /** initServer 和运行时刷新均在服务器线程调用，登录前必须已取得中心名单。 */
+    public static void applyOperators(MinecraftServer server) {
+        Creation creation = matching(server);
+        if (creation == null) return;
+        var policy = creation.operatorPolicy;
+        if (policy == null || !(server.getPlayerList().getOps() instanceof MemoryOpList ops))
+            throw new IllegalStateException("Shared world operator policy is unavailable");
+        if (ops.apply(policy) || creation.appliedOperatorRevision < policy.revision()) {
+            server.getPlayerList().setAllowCommandsForAllPlayers(false);
+            for (var player : server.getPlayerList().getPlayers()) server.getPlayerList().sendPlayerPermissionLevel(player);
+        }
+        creation.appliedOperatorRevision = policy.revision();
+    }
+
     /** 仅向可选客户端兼容暴露实际匹配的房主世界身份，不使用遗留恢复记录。 */
     public static @org.jetbrains.annotations.Nullable String worldId(MinecraftServer server) {
         Creation creation = matching(server);
@@ -755,7 +796,7 @@ public final class SharedWorldCreation {
             long now = net.minecraft.Util.getMillis();
             if (creation.tunnelHost == null && now >= creation.nextHostAttempt) {
                 creation.nextHostAttempt = now + 5_000;
-                if (server.isPublished() || server.publishServer(null, server.getWorldData().isAllowCommands(), HttpUtil.getAvailablePort())) {
+                if (server.isPublished() || server.publishServer(null, false, HttpUtil.getAvailablePort())) {
                     creation.tunnelHost = new SharedWorldHost(creation.settings, creation.user, creation.session, server.getPort(),
                         () -> client.execute(() -> {
                             creation.fenced = true;
