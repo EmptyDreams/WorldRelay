@@ -6,18 +6,19 @@
 
 默认面向 5 人以内的朋友联机，实际可承载的联机规模还取决于房主的电脑和家庭上行带宽。
 
+## 在线配置助手
+
+如果不想研究 WorldReplay 的配置文件，或有些配置项看不明白，可以让 deepseek 来帮你填写配置项，注意对话中不要暴露你的私钥等隐私信息：
+
+https://chat.deepseek.com/share/37grx0wur6c00l0ogc
+
+## 安装
+
 x64 服务程序不依赖系统 glibc；ARM64 服务程序需要 glibc 2.28+。两种架构都需要下文列出的 SSH、rsync 等工具。
-
-每个发布包都包含服务端和对应架构的管理终端，两类包的启动命令相同：
-
-| 版本 | x64 | ARM64 |
-| --- | --- | --- |
-| 原生版 | `worldrelay-linux-x64.tar.gz` | `worldrelay-linux-arm64.tar.gz` |
-| JAR 版 | `worldrelay-jar-linux-x64.tar.gz` | `worldrelay-jar-linux-arm64.tar.gz` |
 
 以下命令面向 **Ubuntu 22.04+ / Debian 12+，x64 或 ARM64**，请在 Bash 中执行。填写开头的 `VERSION`（不带 `server-v`）和新的部署目录，`EDITION` 默认选原生版，改为 `jar` 则下载 JAR 版。两种部署方式选一种执行即可。
 
-## 有 sudo：独立账户，禁用交互登录
+### 有 sudo：独立账户，禁用交互登录
 
 使用独立账户，禁用密码登录、交互终端和转发，只接受 WorldRelay 签发的受限传输密钥。账户保留 `/bin/sh`，供 SSH 执行 rsync；直接使用 `nologin` 会使传输也无法运行。[OpenSSH 说明](https://man.openbsd.org/sshd_config#ForceCommand)
 
@@ -144,7 +145,7 @@ sudo systemctl restart worldrelay
 
 管理终端使用 `sudo -H -u <username> /home/<username>/worldrelay-admin`，自动读取同目录的 `server.properties` 获取管理端口。账户名和路径按实际部署替换。
 
-## 无 sudo：在当前账户目录部署
+### 无 sudo：在当前账户目录部署
 
 需要管理员已为当前账户启用 SSH 公钥登录，并预装 `curl`、`rsync`、`rrsync`。
 
