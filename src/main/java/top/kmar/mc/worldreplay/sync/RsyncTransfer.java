@@ -2,7 +2,7 @@ package top.kmar.mc.worldreplay.sync;
 
 import top.kmar.worldrelay.sync.RsyncCommand;
 
-import java.io.ByteArrayOutputStream;
+import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -13,10 +13,20 @@ import java.nio.file.attribute.*;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
+import java.util.regex.Pattern;
 
 /** 独立子进程，无 Shell；凭据在临时私有目录中，输出有界且不进入日志。 */
 public final class RsyncTransfer {
+
+    private static final Pattern PROGRESS_LINE = Pattern.compile(
+        "\\s*[0-9][0-9,.]*(?:[kKMGTPE]i?B?|B)?\\s+(\\d{1,3})%\\s+"
+            + "([0-9]+(?:\\.[0-9]+)?\\s*[kKMGTPE]?i?B/s)\\s+(?:\\d+|\\?{2}):[0-9?]{2}:[0-9?]{2}"
+            + "(?:\\s+\\(xfr#\\d+, (?:ir|to)-chk=\\d+/\\d+\\))?\\s*");
+    private static final Pattern STAT_LINE = Pattern.compile("(Literal|Matched) data: ([0-9,]+) bytes\\s*");
 
     private RsyncTransfer() {
     }
@@ -41,9 +51,14 @@ public final class RsyncTransfer {
 
     }
 
+    /** rsync 增量重建的进度和速度，可能包含接收端复用的数据。 */
+    public record Progress(int percent, String rate) {
+
+    }
+
     public static Result run(
         BundledRsync.Executables tools, RsyncCommand transfer, Credentials credentials,
-        Path payload, Path temporaryRoot
+        Path payload, Path temporaryRoot, Consumer<Progress> onProgress
     ) throws IOException {
         Files.createDirectories(temporaryRoot);
         Path secret = Files.createTempDirectory(temporaryRoot, "ssh-");
@@ -70,25 +85,22 @@ public final class RsyncTransfer {
             builder.environment().keySet().removeIf(name -> name.startsWith("RSYNC_"));
             Process process = builder.start();
             process.getOutputStream().close();
-            ByteArrayOutputStream output = new ByteArrayOutputStream();
-            Thread drain = Thread.startVirtualThread(() -> {
-                try (InputStream input = process.getInputStream()) {
-                    byte[] buffer = new byte[8192];
-                    int read;
-                    while ((read = input.read(buffer)) != -1) {
-                        if (output.size() < 65536) output.write(buffer, 0, Math.min(read, 65536 - output.size()));
-                    }
-                } catch (IOException ignored) { /* 超时或取消会关闭进程管道。 */ }
+            var output = new FutureTask<>(() -> {
+                try (var input = process.getInputStream()) {
+                    return readOutput(input, onProgress);
+                }
             });
+            Thread drain = Thread.startVirtualThread(output);
             try {
                 if (!process.waitFor(2, TimeUnit.HOURS)) throw new IOException("World transfer timed out");
                 drain.join(5000);
                 if (drain.isAlive() || process.exitValue() != 0) throw new IOException("World transfer failed; check SSH endpoint and retry");
-                String stats = output.toString(StandardCharsets.UTF_8);
-                return new Result(stat(stats, "Literal data"), stat(stats, "Matched data"));
+                return output.get();
             } catch (InterruptedException failure) {
                 Thread.currentThread().interrupt();
                 throw new IOException("World transfer interrupted");
+            } catch (ExecutionException failure) {
+                throw new IOException("Could not read world transfer output", failure.getCause());
             } finally {
                 process.descendants().forEach(child -> {
                     child.destroy();
@@ -113,6 +125,8 @@ public final class RsyncTransfer {
             + quote(config.toAbsolutePath().toString().replace('\\', '/')) + " -p " + transfer.port();
         List<String> args = new ArrayList<>();
         args.add(tools.rsync().toAbsolutePath().toString());
+        // progress2 仅影响本地输出，服务端模板和远端 rrsync 参数保持原样。
+        args.add("--info=progress2");
         // 受管工作目录作为 cwd，避免 Windows 的盘符被当成 HOST:PATH。
         for (String argument : transfer.arguments()) {
             args.add(argument.equals(RsyncCommand.SSH_PLACEHOLDER) ? ssh : argument);
@@ -146,9 +160,36 @@ public final class RsyncTransfer {
         view.setAcl(List.of(entry.build()));
     }
 
-    private static long stat(String output, String name) {
-        var matcher = java.util.regex.Pattern.compile("(?m)^" + name + ": ([0-9,]+) bytes").matcher(output);
-        return matcher.find() ? Long.parseLong(matcher.group(1).replace(",", "")) : 0;
+    static Result readOutput(InputStream input, Consumer<Progress> onProgress) throws IOException {
+        var progress = PROGRESS_LINE.matcher("");
+        var stat = STAT_LINE.matcher("");
+        long literalBytes = 0, matchedBytes = 0;
+        var buffer = new BufferedInputStream(input);
+        byte[] line = new byte[512];
+        int length = 0;
+        // rsync 用 CR 覆写进度；逐条读取也让结尾的统计不受此前输出总量影响。
+        while (true) {
+            int value = buffer.read();
+            if (value != '\r' && value != '\n' && value != -1) {
+                if (length < line.length) line[length++] = (byte) value;
+                continue;
+            }
+            if (length > 0 && length < line.length) {
+                String text = new String(line, 0, length, StandardCharsets.UTF_8);
+                if (progress.reset(text).matches()) {
+                    int percent = Integer.parseInt(progress.group(1));
+                    if (percent <= 100) onProgress.accept(new Progress(percent, progress.group(2)));
+                } else if (stat.reset(text).matches()) {
+                    try {
+                        long count = Long.parseLong(stat.group(2).replace(",", ""));
+                        if (stat.group(1).equals("Literal")) literalBytes = count;
+                        else matchedBytes = count;
+                    } catch (NumberFormatException ignored) { /* 统计输出不参与存档校验。 */ }
+                }
+            }
+            if (value == -1) return new Result(literalBytes, matchedBytes);
+            length = 0;
+        }
     }
 
 }

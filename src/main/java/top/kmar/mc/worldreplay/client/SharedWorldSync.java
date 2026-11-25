@@ -15,6 +15,8 @@ import java.util.ArrayList;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
+import static top.kmar.mc.worldreplay.client.WorldTransferProgress.Phase.*;
+
 /** 下载只能覆盖隔离的下载缓存；上传使用停服后的固定副本，重试复用同一清单与上传 ID。 */
 final class SharedWorldSync {
 
@@ -24,6 +26,13 @@ final class SharedWorldSync {
     static Path download(
         Path game, ClientConnectionSettings settings, String user, LocalWorldSession session,
         LocalWorldSessionStore store
+    ) throws IOException {
+        return download(game, settings, user, session, store, new WorldTransferProgress());
+    }
+
+    static Path download(
+        Path game, ClientConnectionSettings settings, String user, LocalWorldSession session,
+        LocalWorldSessionStore store, WorldTransferProgress progress
     ) throws IOException {
         if (session.baseVersion() == null) throw new IOException("No authoritative version");
         Path payload = store.transfer(session.epoch(), "download");
@@ -37,7 +46,8 @@ final class SharedWorldSync {
             SnapshotFiles.verify(payload.resolve("world"), cached);
             verified = true;
         } catch (IOException ignored) { /* 未下载完成的缓存必须经过 rsync 修复并重新校验。 */ }
-        if (!verified) run(game, settings, store, payload, ticket, false);
+        if (!verified) run(game, settings, store, payload, ticket, false, progress);
+        progress.phase(VERIFYING);
         SnapshotManifest manifest = SnapshotManifest.read(payload.resolve(SnapshotManifest.FILE_NAME), expected);
         SnapshotFiles.verify(payload.resolve("world"), manifest);
         Path target = store.saves(session.epoch()).resolve(session.folder());
@@ -98,6 +108,13 @@ final class SharedWorldSync {
         Path game, ClientConnectionSettings settings, String user, LocalWorldSession session,
         LocalWorldSessionStore store
     ) throws IOException {
+        upload(game, settings, user, session, store, new WorldTransferProgress());
+    }
+
+    static void upload(
+        Path game, ClientConnectionSettings settings, String user, LocalWorldSession session,
+        LocalWorldSessionStore store, WorldTransferProgress progress
+    ) throws IOException {
         Path payload = store.transfer(session.epoch(), "upload");
         // 先查询幂等提交结果；上次成功响应丢失时，不能重新取得锁或创建新上传 ID。
         if (commit(settings, user, session, false)) {
@@ -108,7 +125,8 @@ final class SharedWorldSync {
         JsonObject ticket = request(settings, user, session, "upload", session.uploadId(), null);
         SnapshotManifest manifest = SnapshotManifest.read(payload.resolve(SnapshotManifest.FILE_NAME), session.manifestHash());
         SnapshotFiles.verify(payload.resolve("world"), manifest);
-        run(game, settings, store, payload, ticket, true);
+        run(game, settings, store, payload, ticket, true, progress);
+        progress.phase(PUBLISHING);
         commit(settings, user, session, true);
         cacheSnapshot(store, session);
     }
@@ -166,7 +184,7 @@ final class SharedWorldSync {
 
     private static void run(
         Path game, ClientConnectionSettings settings, LocalWorldSessionStore store, Path payload,
-        JsonObject ticket, boolean upload
+        JsonObject ticket, boolean upload, WorldTransferProgress progress
     ) throws IOException {
         RsyncCommand command;
         try {
@@ -182,8 +200,9 @@ final class SharedWorldSync {
             throw new IOException("Invalid rsync command from server");
         }
         var credentials = new RsyncTransfer.Credentials(ClientJson.requiredString(ticket, "privateKey"), ClientJson.requiredString(ticket, "hostPublicKey"));
-        var result = RsyncTransfer.run(RsyncTools.prepare(game, settings.rsyncMode(), settings.rsyncPath(), settings.sshPath()),
-            command, credentials, payload, store.temporary());
+        var tools = RsyncTools.prepare(game, settings.rsyncMode(), settings.rsyncPath(), settings.sshPath());
+        progress.phase(TRANSFERRING);
+        var result = RsyncTransfer.run(tools, command, credentials, payload, store.temporary(), progress::update);
         WorldRelay.LOGGER.info("World save transfer completed: literalBytes={}, matchedBytes={}", result.literalBytes(), result.matchedBytes());
     }
 

@@ -383,6 +383,7 @@ public final class SharedWorldCreation {
         private boolean finishScreenShown;
         private String finishMessage = "uploading";
         private boolean finishPending = true;
+        private WorldTransferProgress uploadProgress;
 
         private Creation(
             Screen parent, String user, ClientConnectionSettings settings,
@@ -480,13 +481,14 @@ public final class SharedWorldCreation {
         private void downloadAndOpen() {
             if (busy) return;
             busy = true;
-            show(parent, "downloading", true, null);
+            var progress = new WorldTransferProgress();
+            Minecraft.getInstance().setScreen(new SharedWorldOperationScreen(parent, "downloading", true, null, progress));
             IO.execute(() -> {
                 try {
                     String folder = session.stage() == LocalWorldSession.Stage.DOWNLOADING ? session.folder() : "world";
                     save(session.with(LocalWorldSession.Stage.DOWNLOADING, folder));
                     Path game = Minecraft.getInstance().gameDirectory.toPath();
-                    worldDirectory = SharedWorldSync.download(game, settings, user, session, store);
+                    worldDirectory = SharedWorldSync.download(game, settings, user, session, store, progress);
                     var view = WorldOwnershipClient.command(settings, user, session, "ready", "SAVE_SYNCED");
                     if (!view.phase().equals("STARTING") || !java.util.Objects.equals(view.baseVersion(), session.baseVersion())) {
                         throw new IOException("Unexpected start state");
@@ -529,6 +531,8 @@ public final class SharedWorldCreation {
             finishMessage = "uploading";
             finishPending = true;
             finishScreenShown = false;
+            var progress = new WorldTransferProgress();
+            uploadProgress = progress;
             IO.execute(() -> {
                 try {
                     Path game = Minecraft.getInstance().gameDirectory.toPath();
@@ -542,7 +546,7 @@ public final class SharedWorldCreation {
                     }
                     // 请求丢失时可重复 BEGIN；在上传前明确撤下房主端点。
                     // UPLOADING 的提交可能早已成功，故先由同步层查询结果，再决定是否上传。
-                    SharedWorldSync.upload(game, settings, user, session, store);
+                    SharedWorldSync.upload(game, settings, user, session, store, progress);
                     save(session.with(LocalWorldSession.Stage.COMMITTED, session.folder()));
                     stopHeartbeat();
                     active = null;
@@ -816,8 +820,9 @@ public final class SharedWorldCreation {
             creation.chooseReplacement();
             return;
         }
-        show(creation.parent, creation.finishMessage, creation.finishPending,
-            creation.finishMessage.equals("upload_failed") ? creation::uploadStopped : null);
+        client.setScreen(new SharedWorldOperationScreen(creation.parent, creation.finishMessage, creation.finishPending,
+            creation.finishMessage.equals("upload_failed") ? creation::uploadStopped : null,
+            creation.finishPending ? creation.uploadProgress : null));
     }
 
 }
