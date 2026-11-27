@@ -62,7 +62,7 @@ public final class WorldRelayServer {
     }
 
     /** 显式装配生产路由，供启动入口和集成测试共同使用。 */
-    static HttpRouter createRouter(WorldStore worlds, TunnelGateway tunnels) {
+    static HttpRouter createRouter(WorldStore worlds, TunnelGateway tunnels, int autoCheckpointIntervalMinutes) {
         HttpRouter router = new HttpRouter();
         router.register("GET", "/api/v1/ping", exchange -> {
             exchange.getResponseHeaders().set("Cache-Control", "no-store");
@@ -71,7 +71,7 @@ public final class WorldRelayServer {
         router.register("GET", "/api/v1/worlds", new WorldListHandler(worlds));
         for (WorldOwnershipHandler.Action action : WorldOwnershipHandler.Action.values()) {
             router.register("POST", "/api/v1/worlds/" + action.name().toLowerCase(java.util.Locale.ROOT).replace('_', '-'),
-                new WorldOwnershipHandler(worlds, action, tunnels));
+                new WorldOwnershipHandler(worlds, action, tunnels, autoCheckpointIntervalMinutes));
         }
         return router;
     }

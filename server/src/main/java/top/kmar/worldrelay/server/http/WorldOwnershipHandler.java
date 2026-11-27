@@ -28,11 +28,13 @@ public final class WorldOwnershipHandler implements HttpHandler {
     private final WorldStore worlds;
     private final Action action;
     private final TunnelGateway tunnels;
+    private final int autoCheckpointIntervalMinutes;
 
-    public WorldOwnershipHandler(WorldStore worlds, Action action, TunnelGateway tunnels) {
+    public WorldOwnershipHandler(WorldStore worlds, Action action, TunnelGateway tunnels, int autoCheckpointIntervalMinutes) {
         this.worlds = Objects.requireNonNull(worlds);
         this.action = Objects.requireNonNull(action);
         this.tunnels = Objects.requireNonNull(tunnels);
+        this.autoCheckpointIntervalMinutes = autoCheckpointIntervalMinutes;
     }
 
     @Override
@@ -84,7 +86,7 @@ public final class WorldOwnershipHandler implements HttpHandler {
                 };
             }
             JsonWriter writer = new JsonWriter();
-            view.writeJson(writer);
+            view.writeJson(writer, autoCheckpointIntervalMinutes);
             HttpResponses.bytes(exchange, status, "application/json; charset=utf-8", writer.finish().getBytes(StandardCharsets.UTF_8));
         } catch (WorldAccessException failure) {
             HttpResponses.error(exchange, failure.status(), failure.code(), failure.getMessage());

@@ -7,6 +7,8 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import top.kmar.worldrelay.server.auth.UserStore;
 import top.kmar.worldrelay.server.json.JsonReader;
+import top.kmar.worldrelay.server.tunnel.TunnelConfig;
+import top.kmar.worldrelay.server.world.RetentionConfig;
 import top.kmar.worldrelay.server.world.WorldStore;
 import top.kmar.worldrelay.tunnel.TunnelConnector;
 import top.kmar.worldrelay.tunnel.TunnelEndpoint;
@@ -40,8 +42,13 @@ class WorldOwnershipHttpTest {
     }
 
     private ServerConfig config() {
-        return new ServerConfig("127.0.0.1", 0, 32, 0, 0, directory.resolve("users.json"), directory.resolve("worlds"),
-            5, 20, TransferTestUsers.config(directory.resolve("users.json")));
+        return config(0);
+    }
+
+    private ServerConfig config(int checkpointMinutes) {
+        Path users = directory.resolve("users.json");
+        return new ServerConfig("127.0.0.1", 0, 32, 0, 0, users, directory.resolve("worlds"),
+            5, 20, TransferTestUsers.config(users), TunnelConfig.defaults(users, 0), RetentionConfig.defaults(), checkpointMinutes);
     }
 
     /**
@@ -123,7 +130,7 @@ class WorldOwnershipHttpTest {
     @Test
     void twoStageLifecycleExposesEndpointOnlyAfterReadyAndNeverReleasesOnStop() throws Exception {
         String session;
-        try (var client = HttpClient.newHttpClient(); var service = new WorldRelayService(config()); var tunnel = new TunnelConnector()) {
+        try (var client = HttpClient.newHttpClient(); var service = new WorldRelayService(config(30)); var tunnel = new TunnelConnector()) {
             service.start();
             var acquired = send(client, post(service, "acquire", acquireFields(world, device, request), auth));
             assertEquals(201, acquired.statusCode(), acquired.body());
@@ -149,6 +156,7 @@ class WorldOwnershipHttpTest {
             assertTrue(list(client, service).contains("\"endpoint\":{\"address\":\"" + world + ".localhost\",\"port\":25565}"));
             var heartbeat = send(client, post(service, "heartbeat", identity + ",\"playerCount\":2", auth));
             assertEquals(200, heartbeat.statusCode());
+            assertTrue(heartbeat.body().contains("\"autoCheckpointIntervalMinutes\":30"));
             assertTrue(list(client, service).contains("\"playerCount\":2"));
             error(send(client, post(service, "heartbeat", identity, guestAuth)), 403, "OWNER_MISMATCH");
             error(send(client, post(service, "stop", identity + ",\"stage\":\"UPLOAD_COMPLETE\",\"baseVersion\":null", auth)),

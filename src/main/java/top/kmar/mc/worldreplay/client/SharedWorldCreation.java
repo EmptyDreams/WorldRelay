@@ -406,6 +406,8 @@ public final class SharedWorldCreation {
         private int checkpointDelay;
         private CheckpointCopy checkpointCopy;
         private volatile boolean checkpointBusy;
+        private volatile int autoCheckpointIntervalMinutes;
+        private final SharedWorldCheckpoint.Schedule autoCheckpointSchedule = new SharedWorldCheckpoint.Schedule();
         private volatile WorldTransferProgress checkpointProgress;
         private long nextCheckpointDisplay;
 
@@ -443,11 +445,18 @@ public final class SharedWorldCreation {
                 if (active != this) return;
                 try {
                     SharedWorldHost host = tunnelHost;
-                    boolean republish = WorldOwnershipClient.heartbeat(settings, user, session, host == null ? null : host.players());
-                    if (republish && host != null) host.republish();
+                    var result = WorldOwnershipClient.heartbeat(settings, user, session, host == null ? null : host.players());
+                    autoCheckpointIntervalMinutes = result.autoCheckpointIntervalMinutes();
+                    if (result.republish() && host != null) host.republish();
+                } catch (IOException failure) {
+                    autoCheckpointIntervalMinutes = 0;
+                    WorldRelay.LOGGER.warn("Shared world heartbeat failed; ownership is retained");
+                    return;
+                }
+                try {
                     if (operatorPolicy != null && !finishing && !fenced) refreshOperators();
                 } catch (IOException failure) {
-                    WorldRelay.LOGGER.warn("Shared world heartbeat failed; ownership is retained");
+                    WorldRelay.LOGGER.warn("Shared world operator refresh failed");
                 }
             }, interval, interval, TimeUnit.SECONDS);
         }
@@ -547,8 +556,12 @@ public final class SharedWorldCreation {
                 () -> show(parent, "recovery_failed", false, null));
         }
 
+        private boolean checkpointAvailable() {
+            return !busy && !finishing && !fenced && tunnelHost != null && session.stage() == LocalWorldSession.Stage.STARTED;
+        }
+
         private int requestCheckpoint(CommandSourceStack source) {
-            if (busy || finishing || fenced || tunnelHost == null || session.stage() != LocalWorldSession.Stage.STARTED) {
+            if (!checkpointAvailable()) {
                 source.sendFailure(Component.translatable("worldrelay.checkpoint.unavailable"));
                 return 0;
             }
@@ -556,19 +569,31 @@ public final class SharedWorldCreation {
                 source.sendFailure(Component.translatable("worldrelay.checkpoint.busy"));
                 return 0;
             }
+            beginCheckpoint(source.getServer());
+            return 1;
+        }
+
+        private void beginCheckpoint(MinecraftServer server) {
+            autoCheckpointSchedule.reset();
             checkpointBusy = true;
             if (session.checkpoint() != null) {
                 IO.execute(this::uploadCheckpoint);
             } else {
                 checkpointDelay = CHECKPOINT_NOTICE_SECONDS * 20;
-                source.getServer().getPlayerList().broadcastSystemMessage(
+                server.getPlayerList().broadcastSystemMessage(
                     Component.translatable("worldrelay.checkpoint.countdown", CHECKPOINT_NOTICE_SECONDS), false);
             }
-            return 1;
         }
 
         private void tickCheckpoint(MinecraftServer server) {
-            if (checkpointDelay == 0 || --checkpointDelay != 0) return;
+            if (checkpointDelay == 0) {
+                if (!checkpointBusy && checkpointAvailable() && server.isRunning()
+                    && autoCheckpointSchedule.due(autoCheckpointIntervalMinutes, net.minecraft.Util.getMillis())) {
+                    beginCheckpoint(server);
+                }
+                return;
+            }
+            if (--checkpointDelay != 0) return;
             if (finishing || fenced || !server.isRunning()) {
                 checkpointBusy = false;
                 return;
@@ -894,7 +919,10 @@ public final class SharedWorldCreation {
     @SubscribeEvent
     public static void onServerTick(ServerTickEvent.Post event) {
         Creation creation = active;
-        if (creation != null && creation.checkpointDelay > 0 && matching(event.getServer()) == creation) {
+        if (creation == null) return;
+        if (creation.checkpointDelay == 0 && creation.autoCheckpointIntervalMinutes == 0) {
+            creation.autoCheckpointSchedule.reset();
+        } else if (matching(event.getServer()) == creation) {
             creation.tickCheckpoint(event.getServer());
         }
     }

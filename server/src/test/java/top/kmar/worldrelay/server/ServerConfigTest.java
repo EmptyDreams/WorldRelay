@@ -136,6 +136,18 @@ class ServerConfigTest {
         }
     }
 
+    @Test
+    void autoCheckpointIntervalDefaultsToOffAndAcceptsWholeMinutes() throws Exception {
+        Path file = directory.resolve("checkpoint.properties");
+        assertTrue(ServerConfig.createDefaultFile(file));
+        assertTrue(Files.readString(file).contains("checkpoint.auto-interval-minutes=0"));
+        assertEquals(0, ServerConfig.load(file).autoCheckpointIntervalMinutes());
+        Files.writeString(file, "checkpoint.auto-interval-minutes=30\n");
+        assertEquals(30, ServerConfig.load(file).autoCheckpointIntervalMinutes());
+        Files.writeString(file, "checkpoint.auto-interval-minutes=-1\n");
+        assertThrows(IllegalArgumentException.class, () -> ServerConfig.load(file));
+    }
+
     /** 验证数据始终位于当前目录的 data/ 中，拼错的配置项会明确报错。 */
     @Test
     void usesWorkingDirectoryStorageAndRejectsUnknownSettings() throws Exception {

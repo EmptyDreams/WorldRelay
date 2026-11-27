@@ -10,6 +10,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -58,10 +59,12 @@ class TunnelApiTest {
         String world = UUID.randomUUID().toString(), device = UUID.randomUUID().toString(), session = UUID.randomUUID().toString();
         var owner = new LocalWorldSession(world, device, UUID.randomUUID().toString(), session, 1, LocalWorldSession.Stage.STARTED, "world");
         AtomicReference<String> status = new AtomicReference<>("RECOVERY_REQUIRED");
+        AtomicInteger checkpointMinutes = new AtomicInteger();
         server.createContext("/api/v1/worlds/heartbeat", exchange -> {
             exchange.getRequestBody().readAllBytes();
             String body = "{\"worldId\":\"" + world + "\",\"sessionId\":\"" + session + "\",\"epoch\":1,\"phase\":\"RUNNING\",\"status\":\"" + status.get()
-                + "\",\"hasSave\":false,\"baseVersion\":null,\"committedVersion\":null,\"heartbeatIntervalSeconds\":10,\"heartbeatTimeoutSeconds\":30}";
+                + "\",\"hasSave\":false,\"baseVersion\":null,\"committedVersion\":null,\"heartbeatIntervalSeconds\":10,\"heartbeatTimeoutSeconds\":30"
+                + (checkpointMinutes.get() > 0 ? ",\"autoCheckpointIntervalMinutes\":" + checkpointMinutes.get() : "") + "}";
             byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, bytes.length);
             exchange.getResponseBody().write(bytes);
@@ -70,9 +73,13 @@ class TunnelApiTest {
         server.start();
         try {
             var settings = new ClientConnectionSettings("http://127.0.0.1", server.getAddress().getPort(), "a".repeat(43), RsyncMode.AUTO, "", "");
-            assertTrue(WorldOwnershipClient.heartbeat(settings, "Host", owner, 1));
+            assertEquals(new WorldOwnershipClient.Heartbeat(true, 0), WorldOwnershipClient.heartbeat(settings, "Host", owner, 1));
             status.set("RUNNING");
-            assertFalse(WorldOwnershipClient.heartbeat(settings, "Host", owner, 1));
+            assertEquals(new WorldOwnershipClient.Heartbeat(false, 0), WorldOwnershipClient.heartbeat(settings, "Host", owner, 1));
+            checkpointMinutes.set(30);
+            assertEquals(new WorldOwnershipClient.Heartbeat(false, 30), WorldOwnershipClient.heartbeat(settings, "Host", owner, 1));
+            status.set("RECOVERY_REQUIRED");
+            assertEquals(new WorldOwnershipClient.Heartbeat(true, 0), WorldOwnershipClient.heartbeat(settings, "Host", owner, 1));
         } finally {
             server.stop(0);
         }

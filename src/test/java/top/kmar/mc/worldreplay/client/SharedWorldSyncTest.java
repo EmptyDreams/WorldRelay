@@ -25,6 +25,22 @@ class SharedWorldSyncTest {
     @TempDir
     Path game;
 
+    @Test
+    void automaticCheckpointWaitsForAFullIntervalAfterResetOrPolicyChange() {
+        var schedule = new SharedWorldCheckpoint.Schedule();
+        assertFalse(schedule.due(0, 10_000));
+        assertFalse(schedule.due(1, 20_000));
+        assertFalse(schedule.due(1, 79_999));
+        assertTrue(schedule.due(1, 80_000));
+        schedule.reset();
+        assertFalse(schedule.due(1, 170_000));
+        assertFalse(schedule.due(2, 200_000));
+        assertFalse(schedule.due(2, 319_999));
+        assertTrue(schedule.due(2, 320_000));
+        assertFalse(schedule.due(0, 500_000));
+        assertFalse(schedule.due(2, 510_000));
+    }
+
     private LocalWorldSession stopped() {
         return new LocalWorldSession(UUID.randomUUID().toString(), UUID.randomUUID().toString(), UUID.randomUUID().toString(),
             UUID.randomUUID().toString(), 2, LocalWorldSession.Stage.STOPPED, "world", 7L, null, null);

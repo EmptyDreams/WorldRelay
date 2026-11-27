@@ -91,15 +91,27 @@ final class WorldOwnershipClient {
         return view;
     }
 
-    static boolean heartbeat(ClientConnectionSettings settings, String user, LocalWorldSession session, Integer players) throws IOException {
+    record Heartbeat(boolean republish, int autoCheckpointIntervalMinutes) {
+    }
+
+    static Heartbeat heartbeat(ClientConnectionSettings settings, String user, LocalWorldSession session, Integer players) throws IOException {
         JsonObject body = identity(session);
         if (players != null) body.addProperty("playerCount", players);
         String response = post(settings, user, "heartbeat", body, false);
         View view = parse(response);
         view.checkSession(session, true);
+        if (!view.phase().equals("RUNNING")) return new Heartbeat(false, 0);
         try {
-            return view.phase().equals("RUNNING")
-                && ClientJson.requiredString(JsonParser.parseString(response).getAsJsonObject(), "status").equals("RECOVERY_REQUIRED");
+            var reply = JsonParser.parseString(response).getAsJsonObject();
+            String status = ClientJson.requiredString(reply, "status");
+            int minutes = 0;
+            if (status.equals("RUNNING") && reply.has("autoCheckpointIntervalMinutes")) {
+                var interval = reply.getAsJsonPrimitive("autoCheckpointIntervalMinutes");
+                if (!interval.isNumber()) throw new IllegalArgumentException();
+                minutes = interval.getAsBigDecimal().intValueExact();
+                if (minutes < 0) throw new IllegalArgumentException();
+            }
+            return new Heartbeat(status.equals("RECOVERY_REQUIRED"), minutes);
         } catch (RuntimeException failure) {
             throw new IOException("Invalid heartbeat status");
         }

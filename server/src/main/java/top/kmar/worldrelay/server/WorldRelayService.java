@@ -90,7 +90,7 @@ public final class WorldRelayService implements AutoCloseable {
             // 先占用注册端口，避免业务端口为 0 时恰好选中配置的注册端口。
             registration.start();
             tunnels.start();
-            HttpRouter apiRouter = WorldRelayServer.createRouter(worlds, tunnels);
+            HttpRouter apiRouter = WorldRelayServer.createRouter(worlds, tunnels, config.autoCheckpointIntervalMinutes());
             apiRouter.register("POST", "/api/v1/worlds/operators", new OperatorHandler(operators, users, worlds, OperatorHandler.Action.SYNC));
             apiRouter.register("POST", "/api/v1/worlds/tunnel-ticket", new TunnelTicketHandler(tunnels));
             var transfers = new WorldTransfers(worlds, users, config.ssh(), retention);

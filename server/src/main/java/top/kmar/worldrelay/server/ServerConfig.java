@@ -24,7 +24,7 @@ import java.util.stream.Collectors;
 public record ServerConfig(String bindAddress, int port, int maxConcurrentRequests, int shutdownGraceSeconds,
                            int registrationPort, Path usersFile, Path worldsDirectory,
                            int heartbeatIntervalSeconds, int heartbeatTimeoutSeconds, SshRegistrationConfig ssh, TunnelConfig tunnel,
-                           RetentionConfig retention) {
+                           RetentionConfig retention, int autoCheckpointIntervalMinutes) {
 
     static final Path CONFIG_FILE = Path.of("server.properties");
 
@@ -39,6 +39,7 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
         new Option("registration.port", "本机管理端口，固定监听 127.0.0.1；同目录的管理终端自动读取此项，请勿开放到公网。", ServerConfig::registrationPort),
         new Option("ownership.heartbeat-interval-seconds", "房主发送心跳的建议间隔，单位秒，至少为 1。", ServerConfig::heartbeatIntervalSeconds),
         new Option("ownership.heartbeat-timeout-seconds", "判定房主离线的秒数，须大于心跳间隔；离线不会自动允许他人接管。", ServerConfig::heartbeatTimeoutSeconds),
+        new Option("checkpoint.auto-interval-minutes", "房主自动创建并上传检查点的间隔，单位分钟；0 表示关闭。", ServerConfig::autoCheckpointIntervalMinutes),
         new Option("ssh.rrsync-command", "rrsync 程序的完整路径，按服务器实际安装位置填写。", config -> config.ssh().rrsyncCommand()),
         new Option("ssh.transfer-user", "SSH 存档传输使用的 Linux 账户，默认使用生成配置时的服务账户。", config -> config.ssh().transferUser()),
         new Option("ssh.host-public-key-file", "SSH 服务的 Ed25519 主机公钥文件；填写 .pub 公钥文件的路径。", config -> config.ssh().hostPublicKeyFile()),
@@ -90,11 +91,23 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
         if (heartbeatIntervalSeconds < 1 || heartbeatTimeoutSeconds <= heartbeatIntervalSeconds) {
             throw new IllegalArgumentException("Heartbeat timeout must be greater than the positive interval");
         }
+        if (autoCheckpointIntervalMinutes < 0) {
+            throw new IllegalArgumentException("checkpoint.auto-interval-minutes must not be negative");
+        }
         Objects.requireNonNull(ssh, "ssh");
         Objects.requireNonNull(tunnel, "tunnel");
         Objects.requireNonNull(retention, "retention");
         if (tunnel.port() != 0 && (tunnel.port() == port || tunnel.port() == registrationPort))
             throw new IllegalArgumentException("Tunnel port must differ from HTTP ports");
+    }
+
+    public ServerConfig(
+        String bindAddress, int port, int maxConcurrentRequests, int shutdownGraceSeconds,
+        int registrationPort, Path usersFile, Path worldsDirectory, int heartbeatIntervalSeconds,
+        int heartbeatTimeoutSeconds, SshRegistrationConfig ssh, TunnelConfig tunnel, RetentionConfig retention
+    ) {
+        this(bindAddress, port, maxConcurrentRequests, shutdownGraceSeconds, registrationPort, usersFile, worldsDirectory,
+            heartbeatIntervalSeconds, heartbeatTimeoutSeconds, ssh, tunnel, retention, 0);
     }
 
     public ServerConfig(
@@ -224,7 +237,8 @@ public record ServerConfig(String bindAddress, int port, int maxConcurrentReques
                 properties.getProperty("ssh.public-host", sshDefaults.publicHost()),
                 integer(properties, "ssh.public-port", sshDefaults.publicPort())),
             TunnelConfig.load(properties, usersFile, integer(properties, "http.port", defaults.port())),
-            RetentionConfig.load(properties)
+            RetentionConfig.load(properties),
+            integer(properties, "checkpoint.auto-interval-minutes", defaults.autoCheckpointIntervalMinutes())
         );
     }
 

@@ -12,11 +12,30 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /** 游戏线程暂缓常规世界保存，IO 队列检查并复制已保存的文件。 */
 final class SharedWorldCheckpoint {
 
     private SharedWorldCheckpoint() {
+    }
+
+    /** 由内置服务器线程按单调时间检查。一次检查点完成后重新开始间隔。 */
+    static final class Schedule {
+        private int intervalMinutes;
+        private long dueAt;
+
+        boolean due(int minutes, long nowMillis) {
+            if (intervalMinutes != minutes) {
+                intervalMinutes = minutes;
+                dueAt = nowMillis + TimeUnit.MINUTES.toMillis(minutes);
+            }
+            return minutes > 0 && nowMillis - dueAt >= 0;
+        }
+
+        void reset() {
+            intervalMinutes = 0;
+        }
     }
 
     // 与 1.21.1 SaveOffCommand / SaveAllCommand 使用同一套维度保存标志及强制刷盘调用。

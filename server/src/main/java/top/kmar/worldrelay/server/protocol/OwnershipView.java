@@ -9,6 +9,10 @@ public record OwnershipView(String worldId, long epoch, String sessionId, WorldP
                             int heartbeatIntervalSeconds, int heartbeatTimeoutSeconds, boolean allowOfflinePlayers) {
 
     public void writeJson(JsonWriter writer) {
+        writeJson(writer, 0);
+    }
+
+    public void writeJson(JsonWriter writer, int autoCheckpointIntervalMinutes) {
         writer.beginObject().name("worldId").value(worldId).name("epoch").value(epoch)
             .name("sessionId").value(sessionId).name("phase").value(phase.name()).name("status").value(status)
             .name("allowOfflinePlayers").value(allowOfflinePlayers)
@@ -22,7 +26,8 @@ public record OwnershipView(String worldId, long epoch, String sessionId, WorldP
         if (endpoint == null) writer.nullValue();
         else endpoint.writeJson(writer);
         writer.name("heartbeatIntervalSeconds").value(heartbeatIntervalSeconds)
-            .name("heartbeatTimeoutSeconds").value(heartbeatTimeoutSeconds).endObject();
+            .name("heartbeatTimeoutSeconds").value(heartbeatTimeoutSeconds)
+            .name("autoCheckpointIntervalMinutes").value(autoCheckpointIntervalMinutes).endObject();
     }
 
 }
