@@ -92,6 +92,13 @@ final class LocalWorldSessionStore {
         return path;
     }
 
+    Path checkpoint(long epoch, String id) throws IOException {
+        if (epoch < 1 || !UUID.fromString(id).toString().equals(id)) throw new IOException("Invalid checkpoint path");
+        Path checkpoint = root.resolve("work").resolve(Long.toString(epoch)).resolve("checkpoint-" + id);
+        createDirectories(checkpoint.getParent());
+        return checkpoint;
+    }
+
     Path temporary() throws IOException {
         Path path = root.resolve("tmp");
         createDirectories(path);

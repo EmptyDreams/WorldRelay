@@ -38,6 +38,7 @@ final class LocalWorldCleanup {
             if (session.folder() != null) keep.add(current.resolve("saves").resolve(session.folder()));
             if (session.stage() == LocalWorldSession.Stage.UPLOADING) keep.add(current.resolve("upload"));
             if (session.stage() == LocalWorldSession.Stage.DOWNLOADING) keep.add(current.resolve("download"));
+            if (session.checkpoint() != null) keep.add(current.resolve("checkpoint-" + session.checkpoint().uploadId()));
         }
         if (session != null && session.localSource() != null) {
             var source = session.localSource();
@@ -56,6 +57,9 @@ final class LocalWorldCleanup {
                 if (Files.exists(saves, LinkOption.NOFOLLOW_LINKS)) keep.add(saves);
                 Path upload = epoch.resolve("upload");
                 if (Files.exists(upload, LinkOption.NOFOLLOW_LINKS)) keep.add(upload);
+                for (Path path : children(epoch)) {
+                    if (path.getFileName().toString().startsWith("checkpoint-")) keep.add(path);
+                }
             }
             for (Path world : children(saves)) {
                 SnapshotFiles.requireDirectory(world);

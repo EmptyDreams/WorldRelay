@@ -43,11 +43,20 @@ final class WorldOwnershipClient {
                 Long baseVersion, Long committedVersion, int heartbeatIntervalSeconds, boolean allowOfflinePlayers) {
 
         void checkSession(LocalWorldSession session) throws IOException {
+            checkSession(session, false);
+        }
+
+        void checkIdentity(LocalWorldSession session) throws IOException {
             if (!worldId.equals(session.worldId()) || (session.sessionId() != null
                 && (!sessionId.equals(session.sessionId()) || epoch != session.epoch()))) {
                 throw new IOException("Ownership response does not match session");
             }
-            if (session.sessionId() != null && !Objects.equals(session.baseVersion(), baseVersion)) {
+        }
+
+        void checkSession(LocalWorldSession session, boolean allowPendingCheckpoint) throws IOException {
+            checkIdentity(session);
+            if (session.sessionId() != null && !Objects.equals(session.baseVersion(), baseVersion)
+                && !(allowPendingCheckpoint && session.checkpoint() != null && Objects.equals(session.nextVersion(), baseVersion))) {
                 throw new IOException("Ownership base version changed within session");
             }
         }
@@ -78,7 +87,7 @@ final class WorldOwnershipClient {
         if ("SAVE_SYNCED".equals(stage) || "RESUME".equals(stage) || "UPLOAD_COMPLETE".equals(stage)) addBase(body, session.baseVersion());
         String response = post(settings, user, action, body, false);
         View view = parse(response);
-        view.checkSession(session);
+        view.checkSession(session, action.equals("heartbeat") || action.equals("stop") && "BEGIN".equals(stage));
         return view;
     }
 
@@ -87,7 +96,7 @@ final class WorldOwnershipClient {
         if (players != null) body.addProperty("playerCount", players);
         String response = post(settings, user, "heartbeat", body, false);
         View view = parse(response);
-        view.checkSession(session);
+        view.checkSession(session, true);
         try {
             return view.phase().equals("RUNNING")
                 && ClientJson.requiredString(JsonParser.parseString(response).getAsJsonObject(), "status").equals("RECOVERY_REQUIRED");

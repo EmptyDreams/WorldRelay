@@ -45,22 +45,27 @@ public final class WorldTransfers {
         this.retention = retention;
     }
 
-    public void authorize(String worldId, WorldStore.Identity owner, Long base, String id, String hash, boolean upload)
+    public void authorize(String worldId, WorldStore.Identity owner, Long base, String id, String hash, boolean upload, boolean checkpoint)
         throws IOException, WorldAccessException {
-        if (hash != null && worlds.committedResult(worldId, owner, id, hash, base) != null) return;
-        worlds.prepareTransfer(worldId, owner, base, upload);
+        if (hash != null && worlds.committedResult(worldId, owner, id, hash, base, checkpoint) != null) return;
+        worlds.prepareTransfer(worldId, owner, base, upload, checkpoint);
+    }
+
+    public Ticket begin(String worldId, WorldStore.Identity owner, Long base, String uploadId, boolean upload)
+        throws IOException, WorldAccessException {
+        return begin(worldId, owner, base, uploadId, upload, false);
     }
 
     @SuppressWarnings({"try", "unused"}) // 资源只用于阻止清理活动复制的临时目录。
-    public Ticket begin(String worldId, WorldStore.Identity owner, Long base, String uploadId, boolean upload)
+    public Ticket begin(String worldId, WorldStore.Identity owner, Long base, String uploadId, boolean upload, boolean checkpoint)
         throws IOException, WorldAccessException {
         WorldStore.validateId(uploadId);
         try (var operation = retention == null ? null : retention.protect(worldId)) {
             synchronized (locks.computeIfAbsent(worldId, ignored -> new Object())) {
-                WorldStore.SnapshotSource source = worlds.prepareTransfer(worldId, owner, base, upload);
+                WorldStore.SnapshotSource source = worlds.prepareTransfer(worldId, owner, base, upload, checkpoint);
                 if (!upload && source == null) throw new WorldAccessException(409, "NO_SNAPSHOT", "World has no committed snapshot");
                 String hostKey = readHostKey(); // 配置错误时不签发不可用凭据。
-                Path directory = transferDirectory(worldId, owner, uploadId, upload);
+                Path directory = transferDirectory(worldId, owner, uploadId, upload, checkpoint);
                 Path payload = directory.resolve("payload");
                 if (Files.notExists(payload, LinkOption.NOFOLLOW_LINKS)) {
                     if (retention != null) retention.ensureSpace(directory, source == null ? 0 : copySize(source.directory()));
@@ -81,9 +86,9 @@ public final class WorldTransfers {
                 }
                 SnapshotFiles.requireDirectory(payload);
                 // 大型复制期间任期可能改变，签发密钥前再次检查。
-                worlds.prepareTransfer(worldId, owner, base, upload);
+                worlds.prepareTransfer(worldId, owner, base, upload, checkpoint);
                 if (Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException("Transfer preparation interrupted");
-                String keyId = keyId(worldId, owner, uploadId, upload);
+                String keyId = keyId(worldId, owner, uploadId, upload, checkpoint);
                 return new Ticket(keyId, users.issueTransferKey(owner.username(), keyId, payload, !upload, worldId),
                     RsyncCommand.create(ssh.publicHost(), ssh.publicPort(), ssh.transferUser(), upload), hostKey,
                     source == null ? null : source.manifestHash());
@@ -91,16 +96,21 @@ public final class WorldTransfers {
         }
     }
 
-    @SuppressWarnings({"try", "unused"}) // 资源只用于阻止清理活动复制的临时目录。
     public long commit(String worldId, WorldStore.Identity owner, Long base, String uploadId, String hash)
+        throws IOException, WorldAccessException {
+        return commit(worldId, owner, base, uploadId, hash, false);
+    }
+
+    @SuppressWarnings({"try", "unused"}) // 资源只用于阻止清理活动复制的临时目录。
+    public long commit(String worldId, WorldStore.Identity owner, Long base, String uploadId, String hash, boolean checkpoint)
         throws IOException, WorldAccessException {
         if (hash == null || !hash.matches("[0-9a-f]{64}")) throw new IllegalArgumentException("Invalid manifest hash");
         try (var operation = retention == null ? null : retention.protect(worldId)) {
             synchronized (locks.computeIfAbsent(worldId, ignored -> new Object())) {
-                Long published = worlds.committedResult(worldId, owner, uploadId, hash, base);
+                Long published = worlds.committedResult(worldId, owner, uploadId, hash, base, checkpoint);
                 if (published != null) return published;
-                worlds.prepareTransfer(worldId, owner, base, true);
-                Path directory = transferDirectory(worldId, owner, uploadId, true);
+                worlds.prepareTransfer(worldId, owner, base, true, checkpoint);
+                Path directory = transferDirectory(worldId, owner, uploadId, true, checkpoint);
                 if (retention != null) retention.ensureSpace(worlds.directory(), copySize(directory.resolve("payload")));
                 Path candidate = worlds.candidateDirectory(worldId, owner).resolve("payload");
                 // 旧连接仍可能写入暂存区，私有副本不包含任何共享 inode，也不允许跟随链接。
@@ -115,13 +125,23 @@ public final class WorldTransfers {
                     throw new IOException("Session locks must not be uploaded");
                 SnapshotFiles.verify(candidate.resolve("world"), manifest);
                 // 所有文件及目录都已 force，原子发布前再次检查身份、任期、基础版本。
-                long version = worlds.publishSnapshot(worldId, owner, base, uploadId, hash, candidate);
-                if (retention != null) retention.requestSweep();
+                long version = worlds.publishSnapshot(worldId, owner, base, uploadId, hash, candidate, checkpoint);
                 try {
-                    users.revokeTransferKey(keyId(worldId, owner, uploadId, true));
+                    users.revokeTransferKey(keyId(worldId, owner, uploadId, true, checkpoint));
                 } catch (IOException failure) {
                     // 已完成发布不能因公钥清理失败改报失败；短期密钥仅能写入旧暂存副本并会自动过期。
                     System.getLogger(getClass().getName()).log(System.Logger.Level.WARNING, "Published upload key cleanup failed");
+                }
+                if (retention != null) {
+                    if (checkpoint) {
+                        try {
+                            // 当前任期继续有效；已提交的暂存区不需要等任期结束才回收。
+                            worlds.retireTemporary(worldId, owner.epoch(), directory, false);
+                        } catch (IOException failure) {
+                            System.getLogger(getClass().getName()).log(System.Logger.Level.WARNING, "Published checkpoint staging cleanup failed");
+                        }
+                    }
+                    retention.requestSweep();
                 }
                 return version;
             }
@@ -129,25 +149,30 @@ public final class WorldTransfers {
     }
 
     public Long status(String worldId, WorldStore.Identity owner, Long base, String uploadId, String hash) throws WorldAccessException {
-        Long version = worlds.committedResult(worldId, owner, uploadId, hash, base);
+        return status(worldId, owner, base, uploadId, hash, false);
+    }
+
+    public Long status(String worldId, WorldStore.Identity owner, Long base, String uploadId, String hash, boolean checkpoint) throws WorldAccessException {
+        Long version = worlds.committedResult(worldId, owner, uploadId, hash, base, checkpoint);
         if (version == null) worlds.heartbeat(worldId, owner, null);
         return version;
     }
 
     public void closeDownload(String worldId, WorldStore.Identity owner, String uploadId) throws IOException, WorldAccessException {
         worlds.heartbeat(worldId, owner, null);
-        users.revokeTransferKey(keyId(worldId, owner, uploadId, false));
+        users.revokeTransferKey(keyId(worldId, owner, uploadId, false, false));
     }
 
-    private Path transferDirectory(String worldId, WorldStore.Identity owner, String id, boolean upload) throws IOException {
+    private Path transferDirectory(String worldId, WorldStore.Identity owner, String id, boolean upload, boolean checkpoint) throws IOException {
         WorldStore.validateId(worldId);
         WorldStore.validateId(id);
         Path root = ssh.transferDirectory().toAbsolutePath().normalize();
         Files.createDirectories(root);
         SnapshotFiles.requireDirectory(root);
+        String prefix = checkpoint ? "upload-checkpoint-" : upload ? "upload-" : "download-";
         Path path = root.resolve(".sessions")
             .resolve(SnapshotManifest.hash(owner.username().getBytes(StandardCharsets.UTF_8)))
-            .resolve(worldId).resolve(Long.toString(owner.epoch())).resolve((upload ? "upload-" : "download-") + id);
+            .resolve(worldId).resolve(Long.toString(owner.epoch())).resolve(prefix + id);
         for (Path current = root; !current.equals(path); ) {
             Path relative = current.relativize(path);
             current = current.resolve(relative.getName(0));
@@ -158,9 +183,9 @@ public final class WorldTransfers {
         return path;
     }
 
-    private static String keyId(String worldId, WorldStore.Identity owner, String uploadId, boolean upload) {
+    private static String keyId(String worldId, WorldStore.Identity owner, String uploadId, boolean upload, boolean checkpoint) {
         return UUID.nameUUIDFromBytes((worldId + ":" + owner.username() + ":" + owner.deviceId() + ":" + owner.sessionId()
-            + ":" + owner.epoch() + ":" + uploadId + ":" + upload).getBytes(StandardCharsets.UTF_8)).toString();
+            + ":" + owner.epoch() + ":" + uploadId + ":" + upload + (checkpoint ? ":checkpoint" : "")).getBytes(StandardCharsets.UTF_8)).toString();
     }
 
     private String readHostKey() throws IOException {

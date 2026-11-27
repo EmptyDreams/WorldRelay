@@ -4,8 +4,12 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.worldselection.CreateWorldScreen;
 import net.minecraft.client.gui.screens.worldselection.WorldOpenFlows;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.DirectoryLock;
 import net.minecraft.util.HttpUtil;
 import net.minecraft.world.level.storage.LevelResource;
@@ -15,8 +19,10 @@ import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
+import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.neoforged.neoforge.event.server.ServerStoppedEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import top.kmar.mc.worldreplay.WorldRelay;
 import top.kmar.mc.worldreplay.playerdata.SharedPlayerData;
 import top.kmar.mc.worldreplay.permissions.MemoryOpList;
@@ -24,7 +30,10 @@ import top.kmar.worldrelay.permissions.OperatorPolicy;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.*;
 
@@ -32,6 +41,7 @@ import java.util.concurrent.*;
 @EventBusSubscriber(modid = WorldRelay.MODID, value = Dist.CLIENT)
 public final class SharedWorldCreation {
 
+    private static final int CHECKPOINT_NOTICE_SECONDS = 5;
     private static final ScheduledExecutorService IO = Executors.newSingleThreadScheduledExecutor(task -> {
         Thread thread = new Thread(task, "worldrelay-creation-io");
         thread.setDaemon(true);
@@ -68,7 +78,7 @@ public final class SharedWorldCreation {
     static boolean localBusy(Path root) {
         Creation current = active;
         return current != null && current.store.root().equals(root)
-            && (current.busy || Minecraft.getInstance().getSingleplayerServer() != null);
+            && (current.busy || current.checkpointBusy || Minecraft.getInstance().getSingleplayerServer() != null);
     }
 
     static void forgetLocal(Path root) {
@@ -109,6 +119,14 @@ public final class SharedWorldCreation {
                 LocalWorldSessionStore.lockGame(game);
                 store = new LocalWorldSessionStore(game, settings.serverUri().toString(), user, profile, worldId);
                 session = store.read();
+                if (session != null && session.canResume() && session.checkpoint() != null) {
+                    // 进程可能在服务端发布后、本地写回执前退出。
+                    var confirmed = SharedWorldSync.confirmCheckpoint(settings, user, session);
+                    if (confirmed != session) {
+                        store.write(confirmed);
+                        session = confirmed;
+                    }
+                }
                 if (session != null && session.stage() == LocalWorldSession.Stage.COMMITTED) store.cleanupAfterCheckpoint();
                 boolean ownedSession = session != null && session.sessionId() != null
                     && session.stage() != LocalWorldSession.Stage.CANCELLED && session.stage() != LocalWorldSession.Stage.COMMITTED;
@@ -384,6 +402,15 @@ public final class SharedWorldCreation {
         private String finishMessage = "uploading";
         private boolean finishPending = true;
         private WorldTransferProgress uploadProgress;
+        // 倒计时和保存标志只在内置服务器线程改动；完成状态由 IO 线程发布。
+        private int checkpointDelay;
+        private CheckpointCopy checkpointCopy;
+        private volatile boolean checkpointBusy;
+        private volatile WorldTransferProgress checkpointProgress;
+        private long nextCheckpointDisplay;
+
+        private record CheckpointCopy(long epoch, String id, Map<ServerLevel, Boolean> saving) {
+        }
 
         private Creation(
             Screen parent, String user, ClientConnectionSettings settings,
@@ -520,6 +547,167 @@ public final class SharedWorldCreation {
                 () -> show(parent, "recovery_failed", false, null));
         }
 
+        private int requestCheckpoint(CommandSourceStack source) {
+            if (busy || finishing || fenced || tunnelHost == null || session.stage() != LocalWorldSession.Stage.STARTED) {
+                source.sendFailure(Component.translatable("worldrelay.checkpoint.unavailable"));
+                return 0;
+            }
+            if (checkpointBusy) {
+                source.sendFailure(Component.translatable("worldrelay.checkpoint.busy"));
+                return 0;
+            }
+            checkpointBusy = true;
+            if (session.checkpoint() != null) {
+                IO.execute(this::uploadCheckpoint);
+            } else {
+                checkpointDelay = CHECKPOINT_NOTICE_SECONDS * 20;
+                source.getServer().getPlayerList().broadcastSystemMessage(
+                    Component.translatable("worldrelay.checkpoint.countdown", CHECKPOINT_NOTICE_SECONDS), false);
+            }
+            return 1;
+        }
+
+        private void tickCheckpoint(MinecraftServer server) {
+            if (checkpointDelay == 0 || --checkpointDelay != 0) return;
+            if (finishing || fenced || !server.isRunning()) {
+                checkpointBusy = false;
+                return;
+            }
+            CheckpointCopy copy;
+            try {
+                copy = new CheckpointCopy(session.epoch(), UUID.randomUUID().toString(), SharedWorldCheckpoint.save(server));
+            } catch (IOException | RuntimeException failure) {
+                checkpointBusy = false;
+                checkpointError("capture_failed", failure);
+                return;
+            }
+            checkpointCopy = copy;
+            IO.execute(() -> {
+                boolean copied = false;
+                try {
+                    SharedWorldCheckpoint.copy(worldDirectory, store.checkpoint(copy.epoch(), copy.id()));
+                    copied = true;
+                } catch (IOException | RuntimeException failure) {
+                    checkpointError("capture_failed", failure);
+                } finally {
+                    boolean completed = copied;
+                    server.execute(() -> finishCheckpointCopy(copy, completed));
+                }
+            });
+        }
+
+        private void finishCheckpointCopy(CheckpointCopy copy, boolean success) {
+            if (checkpointCopy != copy) return; // 停服流程已经恢复保存标志并安排清理。
+            checkpointCopy = null;
+            SharedWorldCheckpoint.restore(copy.saving());
+            IO.execute(() -> {
+                if (!success || finishing || fenced) {
+                    discardCheckpointCopy(copy);
+                    checkpointBusy = false;
+                    return;
+                }
+                String hash;
+                try {
+                    hash = SharedWorldSync.writeManifest(store.checkpoint(copy.epoch(), copy.id()));
+                } catch (IOException | RuntimeException failure) {
+                    discardCheckpointCopy(copy);
+                    checkpointError("capture_failed", failure);
+                    checkpointBusy = false;
+                    return;
+                }
+                try {
+                    persistCheckpoint(session.withCheckpoint(new LocalWorldSession.Checkpoint(copy.id(), hash), session.baseVersion()));
+                } catch (IOException failure) {
+                    checkpointError("capture_failed", failure);
+                    checkpointBusy = false;
+                    return;
+                }
+                uploadCheckpoint();
+            });
+        }
+
+        private void cancelCheckpointCapture() {
+            checkpointDelay = 0;
+            var copy = checkpointCopy;
+            if (copy == null) return;
+            checkpointCopy = null;
+            SharedWorldCheckpoint.restore(copy.saving());
+            IO.execute(() -> discardCheckpointCopy(copy));
+        }
+
+        private void discardCheckpointCopy(CheckpointCopy copy) {
+            try {
+                Path path = store.checkpoint(copy.epoch(), copy.id());
+                if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) LocalWorldCleanup.deleteTree(path);
+            } catch (IOException failure) {
+                WorldRelay.LOGGER.warn("Checkpoint copy cleanup will retry after the next successful sync");
+            }
+        }
+
+        private void uploadCheckpoint() {
+            var progress = new WorldTransferProgress();
+            checkpointProgress = progress;
+            try {
+                Path game = Minecraft.getInstance().gameDirectory.toPath();
+                persistCheckpoint(SharedWorldSync.uploadCheckpoint(game, settings, user, session, store, progress));
+                store.cleanupAfterCheckpoint();
+                checkpointMessage("published");
+            } catch (IOException | RuntimeException failure) {
+                if (SharedWorldRecovery.ownershipLost(failure)) {
+                    fenced = true;
+                    if (tunnelHost != null) tunnelHost.close();
+                    checkpointMessage("ownership_lost");
+                } else checkpointError("upload_failed", failure);
+            } finally {
+                checkpointProgress = null;
+                checkpointBusy = false;
+            }
+        }
+
+        private void persistCheckpoint(LocalWorldSession next) throws IOException {
+            // 发起发布前先持久化上传身份；确认发布后再以同一任期推进基础版本。
+            store.write(next);
+            session = next;
+        }
+
+        private void settleCheckpointBeforeHandover() throws IOException {
+            if (session.checkpoint() == null) return;
+            // BEGIN 先关闭在线发布窗口。若检查点已经发布，必须使用其回执推进基础版本。
+            var stopped = WorldOwnershipClient.command(settings, user, session, "stop", "BEGIN");
+            if (!stopped.phase().equals("STOPPING") && !stopped.phase().equals("COMMITTING"))
+                throw new IOException("Checkpoint publication has not been closed for handover");
+            var confirmed = SharedWorldSync.confirmCheckpoint(settings, user, session);
+            if (!Objects.equals(stopped.baseVersion(), confirmed.baseVersion())) throw new IOException("Checkpoint receipt is unresolved");
+            persistCheckpoint(confirmed.withCheckpoint(null, confirmed.baseVersion()));
+        }
+
+        private void checkpointError(String message, Exception failure) {
+            WorldRelay.LOGGER.warn("Shared world checkpoint did not complete", failure);
+            checkpointMessage(message);
+        }
+
+        private void checkpointMessage(String message) {
+            var client = Minecraft.getInstance();
+            client.execute(() -> {
+                if (active == this && !finishing && client.player != null) {
+                    client.gui.getChat().addMessage(Component.translatable("worldrelay.checkpoint." + message));
+                }
+            });
+        }
+
+        private void displayCheckpoint(Minecraft client, long now) {
+            var progress = checkpointProgress;
+            if (progress == null || now < nextCheckpointDisplay) return;
+            nextCheckpointDisplay = now + 1_000;
+            var state = progress.state();
+            var sample = state.sample();
+            Component message = sample == null
+                ? Component.translatable(state.phase() == WorldTransferProgress.Phase.PUBLISHING
+                    ? "worldrelay.transfer.publishing" : "worldrelay.checkpoint.uploading")
+                : Component.translatable("worldrelay.transfer.progress", sample.percent() + "%", state.currentRate());
+            client.gui.setOverlayMessage(message, false);
+        }
+
         private void uploadStopped() {
             if (fenced && session.stage() != LocalWorldSession.Stage.UPLOADING) {
                 chooseReplacement();
@@ -537,6 +725,7 @@ public final class SharedWorldCreation {
                 try {
                     Path game = Minecraft.getInstance().gameDirectory.toPath();
                     if (session.stage() == LocalWorldSession.Stage.STOPPED) {
+                        settleCheckpointBeforeHandover();
                         // 已停服记录可以在下次客户端启动后重试；崩溃遗留 STARTED/STOPPING 不会走这里。
                         try (DirectoryLock ignored = DirectoryLock.create(worldDirectory)) {
                             save(SharedWorldSync.prepareUpload(session, store));
@@ -691,11 +880,33 @@ public final class SharedWorldCreation {
     }
 
     @SubscribeEvent
+    public static void onRegisterCommands(RegisterCommandsEvent event) {
+        event.getDispatcher().register(Commands.literal("worldrelay").then(Commands.literal("checkpoint")
+            .requires(source -> matching(source.getServer()) != null && source.getEntity() instanceof ServerPlayer player
+                && source.getServer().isSingleplayerOwner(player.getGameProfile()))
+            .executes(context -> {
+                var source = context.getSource();
+                Creation creation = matching(source.getServer());
+                return creation == null ? 0 : creation.requestCheckpoint(source);
+            })));
+    }
+
+    @SubscribeEvent
+    public static void onServerTick(ServerTickEvent.Post event) {
+        Creation creation = active;
+        if (creation != null && creation.checkpointDelay > 0 && matching(event.getServer()) == creation) {
+            creation.tickCheckpoint(event.getServer());
+        }
+    }
+
+    @SubscribeEvent
     public static void onServerStopping(ServerStoppingEvent event) {
         Creation creation = active;
         if (creation == null || creation.worldDirectory == null
             || !event.getServer().getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize().equals(creation.worldDirectory)) return;
         creation.normalStop = true;
+        creation.finishing = true;
+        creation.cancelCheckpointCapture();
         if (creation.tunnelHost != null) creation.tunnelHost.close();
         IO.execute(() -> {
             try {
@@ -798,6 +1009,7 @@ public final class SharedWorldCreation {
         var server = client.getSingleplayerServer();
         if (creation != null && !creation.finishing && !creation.fenced && client.player != null && server != null && matching(server) == creation) {
             long now = net.minecraft.Util.getMillis();
+            creation.displayCheckpoint(client, now);
             if (creation.tunnelHost == null && now >= creation.nextHostAttempt) {
                 creation.nextHostAttempt = now + 5_000;
                 if (server.isPublished() || server.publishServer(null, false, HttpUtil.getAvailablePort())) {

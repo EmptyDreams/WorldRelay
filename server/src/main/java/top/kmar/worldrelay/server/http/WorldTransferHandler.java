@@ -18,7 +18,17 @@ import java.util.Set;
 /** 数据通过 rsync 传输，HTTP 只传身份、会话和固定大小的摘要。 */
 public final class WorldTransferHandler implements HttpHandler {
 
-    public enum Action {DOWNLOAD, UPLOAD, COMMIT, COMMIT_STATUS, CLOSE_DOWNLOAD}
+    public enum Action {
+        DOWNLOAD, UPLOAD, COMMIT, COMMIT_STATUS, CLOSE_DOWNLOAD, CHECKPOINT_UPLOAD, CHECKPOINT_COMMIT, CHECKPOINT_STATUS;
+
+        boolean checkpoint() {
+            return this == CHECKPOINT_UPLOAD || this == CHECKPOINT_COMMIT || this == CHECKPOINT_STATUS;
+        }
+
+        boolean commit() { return this == COMMIT || this == CHECKPOINT_COMMIT; }
+
+        boolean status() { return this == COMMIT_STATUS || this == CHECKPOINT_STATUS; }
+    }
 
     private final WorldTransfers transfers;
     private final Action action;
@@ -51,12 +61,13 @@ public final class WorldTransferHandler implements HttpHandler {
             var owner = new WorldStore.Identity(exchange.getPrincipal().getUsername(), command.device, command.session, command.epoch);
             String jobKey = owner + ":" + action + ":" + command;
             String response;
-            if (action == Action.COMMIT_STATUS || action == Action.CLOSE_DOWNLOAD) {
+            if (action.status() || action == Action.CLOSE_DOWNLOAD) {
                 if (action == Action.CLOSE_DOWNLOAD) jobs.invalidate(owner + ":" + Action.DOWNLOAD + ":" + command);
                 response = execute(command, owner);
             } else {
                 // 未授权请求不进入后台队列；长任务开始和完成时仍会再次校验任期。
-                transfers.authorize(command.world, owner, command.base, command.transfer, command.hash, action != Action.DOWNLOAD);
+                transfers.authorize(command.world, owner, command.base, command.transfer, command.hash,
+                    action != Action.DOWNLOAD, action.checkpoint());
                 response = jobs.poll(jobKey, command.world, owner.username(), action.name(), () -> execute(command, owner));
             }
             HttpResponses.bytes(exchange, response == null ? 202 : 200, "application/json; charset=utf-8",
@@ -72,10 +83,10 @@ public final class WorldTransferHandler implements HttpHandler {
 
     private String execute(Command command, WorldStore.Identity owner) throws IOException, WorldAccessException {
         JsonWriter writer = new JsonWriter().beginObject();
-        if (action == Action.COMMIT || action == Action.COMMIT_STATUS) {
+        if (action.commit() || action.status()) {
             Long version;
-            if (action == Action.COMMIT) version = transfers.commit(command.world, owner, command.base, command.transfer, command.hash);
-            else version = transfers.status(command.world, owner, command.base, command.transfer, command.hash);
+            if (action.commit()) version = transfers.commit(command.world, owner, command.base, command.transfer, command.hash, action.checkpoint());
+            else version = transfers.status(command.world, owner, command.base, command.transfer, command.hash, action.checkpoint());
             writer.name("worldId").value(command.world).name("epoch").value(command.epoch)
                 .name("uploadId").value(command.transfer).name("manifestHash").value(command.hash).name("version");
             if (version == null) writer.nullValue();
@@ -84,7 +95,7 @@ public final class WorldTransferHandler implements HttpHandler {
             transfers.closeDownload(command.world, owner, command.transfer);
             return "{\"closed\":true}";
         } else {
-            var ticket = transfers.begin(command.world, owner, command.base, command.transfer, action == Action.UPLOAD);
+            var ticket = transfers.begin(command.world, owner, command.base, command.transfer, action != Action.DOWNLOAD, action.checkpoint());
             writer.name("worldId").value(command.world).name("epoch").value(command.epoch)
                 .name("uploadId").value(command.transfer).name("transferId").value(ticket.transferId())
                 .name("privateKey").value(ticket.privateKey()).name("hostPublicKey").value(ticket.hostPublicKey())
@@ -132,9 +143,9 @@ public final class WorldTransferHandler implements HttpHandler {
         reader.endObject();
         reader.finish();
         Set<String> expected = new HashSet<>(Set.of("worldId", "deviceId", "sessionId", "epoch", "baseVersion", "uploadId"));
-        if (action == Action.COMMIT || action == Action.COMMIT_STATUS) expected.add("manifestHash");
+        if (action.commit() || action.status()) expected.add("manifestHash");
         if (!fields.equals(expected) || epoch < 1 || (base != null && base < 1)
-            || ((action == Action.COMMIT || action == Action.COMMIT_STATUS) && (hash == null || !hash.matches("[0-9a-f]{64}"))))
+            || ((action.commit() || action.status()) && (hash == null || !hash.matches("[0-9a-f]{64}"))))
             throw new IllegalArgumentException();
         WorldStore.validateId(world);
         WorldStore.validateId(device);

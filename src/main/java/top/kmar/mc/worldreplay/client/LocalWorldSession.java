@@ -4,9 +4,17 @@ import java.util.UUID;
 
 /** 会话是恢复记录，不包含 Token。START_REQUESTED 起不允许重新生成或取消创建。 */
 record LocalWorldSession(String worldId, String deviceId, String requestId, String sessionId, long epoch,
-                         Stage stage, String folder, Long baseVersion, String uploadId, String manifestHash, LocalSource localSource) {
+                         Stage stage, String folder, Long baseVersion, String uploadId, String manifestHash,
+                         LocalSource localSource, Checkpoint checkpoint) {
 
     enum Stage {ACQUIRING, PREPARING, CANCELLING, CANCELLED, DOWNLOADING, START_REQUESTED, STARTED, STOPPING, STOPPED, UPLOADING, COMMITTED}
+
+    record Checkpoint(String uploadId, String manifestHash) {
+        Checkpoint {
+            if (!UUID.fromString(uploadId).toString().equals(uploadId) || !manifestHash.matches("[0-9a-f]{64}"))
+                throw new IllegalArgumentException("Invalid checkpoint receipt identity");
+        }
+    }
 
     record LocalSource(long epoch, String folder, Long baseVersion) {
 
@@ -24,6 +32,11 @@ record LocalWorldSession(String worldId, String deviceId, String requestId, Stri
         Stage stage, String folder, Long baseVersion, String uploadId, String manifestHash
     ) {
         this(worldId, deviceId, requestId, sessionId, epoch, stage, folder, baseVersion, uploadId, manifestHash, null);
+    }
+
+    LocalWorldSession(String worldId, String deviceId, String requestId, String sessionId, long epoch,
+                      Stage stage, String folder, Long baseVersion, String uploadId, String manifestHash, LocalSource localSource) {
+        this(worldId, deviceId, requestId, sessionId, epoch, stage, folder, baseVersion, uploadId, manifestHash, localSource, null);
     }
 
     LocalWorldSession(String worldId, String deviceId, String requestId, String sessionId, long epoch, Stage stage, String folder) {
@@ -51,6 +64,8 @@ record LocalWorldSession(String worldId, String deviceId, String requestId, Stri
         }
         if (stage == Stage.UPLOADING && (uploadId == null || manifestHash == null))
             throw new IllegalArgumentException("Missing upload receipt identity");
+        if (checkpoint != null && stage != Stage.STARTED && stage != Stage.STOPPING && stage != Stage.STOPPED)
+            throw new IllegalArgumentException("Checkpoint requires an existing world session");
     }
 
     LocalWorldSession owned(WorldOwnershipClient.View view) {
@@ -59,7 +74,16 @@ record LocalWorldSession(String worldId, String deviceId, String requestId, Stri
 
     LocalWorldSession with(Stage next, String target) {
         return new LocalWorldSession(worldId, deviceId, requestId, sessionId, epoch, next, target, baseVersion, uploadId, manifestHash,
-            next == Stage.STARTED ? null : localSource);
+            next == Stage.STARTED ? null : localSource, checkpoint);
+    }
+
+    LocalWorldSession withCheckpoint(Checkpoint pending, Long base) {
+        return new LocalWorldSession(worldId, deviceId, requestId, sessionId, epoch, stage, folder,
+            base, uploadId, manifestHash, localSource, pending);
+    }
+
+    long nextVersion() {
+        return baseVersion == null ? 1 : Math.addExact(baseVersion, 1);
     }
 
     LocalWorldSession uploading(String id, String hash) {

@@ -59,7 +59,7 @@ final class TunnelApi {
         JsonObject body = WorldOwnershipClient.identity(owner);
         body.addProperty("stage", "PORT_OPENED");
         body.addProperty("tunnelId", registration);
-        WorldOwnershipClient.parse(WorldOwnershipClient.post(settings, user, "ready", body, false)).checkSession(owner);
+        WorldOwnershipClient.parse(WorldOwnershipClient.post(settings, user, "ready", body, false)).checkIdentity(owner);
     }
 
 }

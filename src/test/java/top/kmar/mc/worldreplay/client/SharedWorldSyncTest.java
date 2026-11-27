@@ -13,6 +13,8 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
+import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -83,6 +85,59 @@ class SharedWorldSyncTest {
             assertEquals(2, queries.get());
             assertFalse(Files.exists(store.temporary().resolve("identity")));
             assertNotNull(store.cache());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    /** 运行中副本跳过根会话锁，原文件变化后仍是同一份上传内容。 */
+    @Test
+    void liveCopyIsIndependentAndFileStateDetectsSameSizeChanges() throws Exception {
+        Path world = Files.createDirectory(game.resolve("live"));
+        Path level = Files.writeString(world.resolve("level.dat"), "a");
+        Files.writeString(world.resolve("session.lock"), "active");
+        var initial = SharedWorldCheckpoint.fileState(world);
+        Path payload = game.resolve("checkpoint");
+        try (DirectoryLock ignored = DirectoryLock.create(world)) {
+            SharedWorldCheckpoint.copy(world, payload);
+        }
+        Files.writeString(level, "b");
+        Files.setLastModifiedTime(level, FileTime.from(Instant.EPOCH.plusSeconds(60)));
+        assertNotEquals(initial, SharedWorldCheckpoint.fileState(world));
+        assertFalse(Files.exists(payload.resolve("world/session.lock")));
+        var hash = SharedWorldSync.writeManifest(payload);
+        SnapshotFiles.verify(payload.resolve("world"), SnapshotManifest.read(payload.resolve("manifest.bin"), hash));
+        assertEquals("a", Files.readString(payload.resolve("world/level.dat")));
+    }
+
+    /** 回执可跨客户端进程恢复，保留房主会话并推进同一任期的基础版本。 */
+    @Test
+    void checkpointReceiptAdvancesBaseWithoutCreatingAStoppedUpload() throws Exception {
+        var pending = new LocalWorldSession.Checkpoint(UUID.randomUUID().toString(), "c".repeat(64));
+        var session = stopped().with(LocalWorldSession.Stage.STARTED, "world").withCheckpoint(pending, 7L);
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/v1/worlds/checkpoint-status", exchange -> {
+            try (exchange) {
+                String body = "{\"worldId\":\"" + session.worldId() + "\",\"epoch\":2,\"uploadId\":\"" + pending.uploadId()
+                    + "\",\"manifestHash\":\"" + pending.manifestHash() + "\",\"version\":8}";
+                byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200, bytes.length);
+                exchange.getResponseBody().write(bytes);
+            }
+        });
+        server.start();
+        try {
+            var settings = new ClientConnectionSettings("http://127.0.0.1", server.getAddress().getPort(), "token",
+                RsyncMode.CUSTOM, game.resolve("nonexistent-rsync").toString(), game.resolve("nonexistent-ssh").toString());
+            var store = new LocalWorldSessionStore(game, settings.serverUri().toString(), "Alice", UUID.randomUUID(), session.worldId());
+            store.write(session);
+            var confirmed = SharedWorldSync.uploadCheckpoint(game, settings, "Alice", store.read(), store, new WorldTransferProgress());
+            assertNull(confirmed.checkpoint());
+            assertEquals(8L, confirmed.baseVersion());
+            assertEquals(session.epoch(), confirmed.epoch());
+            assertEquals(session.sessionId(), confirmed.sessionId());
+            assertEquals(LocalWorldSession.Stage.STARTED, confirmed.stage());
+            assertEquals(8L, confirmed.with(LocalWorldSession.Stage.STOPPED, "world").baseVersion());
         } finally {
             server.stop(0);
         }

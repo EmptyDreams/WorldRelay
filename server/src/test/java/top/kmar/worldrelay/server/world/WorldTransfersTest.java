@@ -5,6 +5,7 @@ import org.junit.jupiter.api.io.TempDir;
 import top.kmar.worldrelay.server.auth.SshRegistrationConfig;
 import top.kmar.worldrelay.server.auth.TransferTestUsers;
 import top.kmar.worldrelay.server.auth.UserStore;
+import top.kmar.worldrelay.server.protocol.HostEndpoint;
 import top.kmar.worldrelay.snapshot.SnapshotFiles;
 import top.kmar.worldrelay.snapshot.SnapshotManifest;
 
@@ -77,6 +78,57 @@ class WorldTransfersTest {
         Files.writeString(world.resolve("dimensions/mod/moon/region/r.0.0.mca"), "blocks-and-entities");
         Files.createDirectories(world.resolve("unknown-mod/empty"));
         Files.writeString(world.resolve("unknown-mod/train.dat"), "train-one");
+    }
+
+    /** 在线发布推进基础版本，原房主可继续联机并从该版本正常交接。 */
+    @Test
+    void liveCheckpointKeepsOwnerAndSurvivesRestartBeforeHandover() throws Exception {
+        String world, checkpoint = id(), hash;
+        String device = id(), acquisition = id();
+        WorldStore.Identity owner;
+        try (var users = users(); var worlds = WorldStore.open(root.resolve("worlds"))) {
+            var transfers = new WorldTransfers(worlds, users, ssh());
+            world = create(worlds);
+            var acquired = worlds.acquire(world, "Alice", device, acquisition).view();
+            owner = new WorldStore.Identity("Alice", device, acquired.sessionId(), acquired.epoch());
+            assertEquals("INVALID_PHASE", assertThrows(WorldAccessException.class,
+                () -> transfers.begin(world, owner, null, checkpoint, true, true)).code());
+            worlds.ready(world, owner, WorldStore.ReadyStage.SAVE_SYNCED, null, null);
+            var endpoint = new HostEndpoint("127.0.0.1", 25565);
+            worlds.ready(world, owner, WorldStore.ReadyStage.PORT_OPENED, null, endpoint);
+            transfers.begin(world, owner, null, checkpoint, true, true);
+            Path live = payload(world, owner, "checkpoint-" + checkpoint);
+            firstSave(live);
+            hash = manifest(live);
+            assertEquals(1L, transfers.commit(world, owner, null, checkpoint, hash, true));
+            assertEquals(1L, transfers.commit(world, owner, null, checkpoint, hash, true));
+            assertEquals("COMMIT_CONFLICT", assertThrows(WorldAccessException.class,
+                () -> transfers.commit(world, owner, null, checkpoint, hash)).code());
+            var running = worlds.heartbeat(world, owner, null);
+            assertEquals("RUNNING", running.status());
+            assertEquals(endpoint, running.endpoint());
+            assertEquals(owner.epoch(), running.epoch());
+            assertEquals(1L, running.baseVersion());
+            assertEquals(owner.sessionId(), worlds.acquire(world, "Alice", device, acquisition).view().sessionId());
+            assertEquals("BASE_VERSION_MISMATCH", assertThrows(WorldAccessException.class,
+                () -> transfers.begin(world, owner, null, id(), true, true)).code());
+        }
+        try (var users = users(); var worlds = WorldStore.open(root.resolve("worlds"))) {
+            var transfers = new WorldTransfers(worlds, users, ssh());
+            assertEquals(1L, transfers.status(world, owner, null, checkpoint, hash, true));
+            worlds.stop(world, owner, BEGIN, 1L);
+            assertEquals("INVALID_PHASE", assertThrows(WorldAccessException.class,
+                () -> transfers.commit(world, owner, 1L, id(), hash, true)).code());
+            String finalUpload = id();
+            transfers.begin(world, owner, 1L, finalUpload, true);
+            Path finalPayload = payload(world, owner, finalUpload);
+            assertEquals("train-one", Files.readString(finalPayload.resolve("world/unknown-mod/train.dat")));
+            Files.writeString(finalPayload.resolve("world/unknown-mod/train.dat"), "train-two");
+            assertEquals(2L, transfers.commit(world, owner, 1L, finalUpload, manifest(finalPayload)));
+            assertEquals("FREE", worlds.list().getFirst().status());
+            assertEquals("ACQUISITION_COMPLETED", assertThrows(WorldAccessException.class,
+                () -> worlds.acquire(world, "Alice", device, acquisition)).code());
+        }
     }
 
     /** 复制前空间不足保留所有权和暂存数据，补足空间后可用同一上传身份重试完成提交。 */

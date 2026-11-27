@@ -385,6 +385,7 @@ public final class WorldStore implements AutoCloseable {
         var state = entry.metadata.state();
         if (entry.restore != null) throw conflict("RESTORE_IN_PROGRESS", "A backup restore is in progress");
         for (var committed : entry.metadata.commits()) {
+            if (committed.checkpoint()) continue;
             var owner = committed.owner();
             if (owner.username().equals(username) && owner.deviceId().equals(deviceId) && owner.requestId().equals(requestId)) {
                 throw conflict("ACQUISITION_COMPLETED", "Acquisition has already committed");
@@ -574,10 +575,17 @@ public final class WorldStore implements AutoCloseable {
     /** 只在很短的同步边界中检查任期；复制、摘要计算不持有全局所有权锁。 */
     public synchronized SnapshotSource prepareTransfer(String worldId, Identity identity, Long baseVersion, boolean upload)
         throws IOException, WorldAccessException {
+        return prepareTransfer(worldId, identity, baseVersion, upload, false);
+    }
+
+    synchronized SnapshotSource prepareTransfer(String worldId, Identity identity, Long baseVersion, boolean upload, boolean checkpoint)
+        throws IOException, WorldAccessException {
         Entry entry = owned(worldId, identity);
         var state = entry.metadata.state();
         checkBase(state, baseVersion);
-        if (upload) {
+        if (checkpoint) {
+            if (state.phase() != WorldPhase.RUNNING) throw conflict("INVALID_PHASE", "A checkpoint requires a running world");
+        } else if (upload) {
             if (state.phase() != WorldPhase.STOPPING && state.phase() != WorldPhase.COMMITTING) {
                 throw conflict("INVALID_PHASE", "World must be stopped before upload");
             }
@@ -597,11 +605,16 @@ public final class WorldStore implements AutoCloseable {
     /** 响应丢失后即使已有下一位房主，也能用原身份和原摘要查询幂等结果。 */
     public synchronized Long committedResult(String worldId, Identity identity, String uploadId, String hash, Long base)
         throws WorldAccessException {
+        return committedResult(worldId, identity, uploadId, hash, base, false);
+    }
+
+    synchronized Long committedResult(String worldId, Identity identity, String uploadId, String hash, Long base, boolean checkpoint)
+        throws WorldAccessException {
         validateId(uploadId);
         for (var receipt : entry(worldId).metadata.commits()) {
             if (!receipt.uploadId().equals(uploadId)) continue;
             if (!receipt.matches(identity)) throw new WorldAccessException(403, "OWNER_MISMATCH", "Commit identity does not match");
-            if (!receipt.manifestHash().equals(hash) || !Objects.equals(receipt.baseVersion(), base)) {
+            if (receipt.checkpoint() != checkpoint || !receipt.manifestHash().equals(hash) || !Objects.equals(receipt.baseVersion(), base)) {
                 throw conflict("COMMIT_CONFLICT", "Commit request differs from published snapshot");
             }
             return receipt.version();
@@ -831,24 +844,32 @@ public final class WorldStore implements AutoCloseable {
         return trash;
     }
 
-    /** candidate 由协调服务私有持有，SSH 从未获得此路径；最终元数据原子发布同时释放所有权。 */
+    /** candidate 由协调服务私有持有，SSH 从未获得此路径。 */
     public synchronized long publishSnapshot(
         String worldId, Identity identity, Long baseVersion,
         String uploadId, String hash, Path candidate
     ) throws IOException, WorldAccessException {
-        Long completed = committedResult(worldId, identity, uploadId, hash, baseVersion);
+        return publishSnapshot(worldId, identity, baseVersion, uploadId, hash, candidate, false);
+    }
+
+    synchronized long publishSnapshot(String worldId, Identity identity, Long baseVersion, String uploadId,
+                                      String hash, Path candidate, boolean checkpoint) throws IOException, WorldAccessException {
+        Long completed = committedResult(worldId, identity, uploadId, hash, baseVersion, checkpoint);
         if (completed != null) return completed;
         if (Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException("Snapshot publication interrupted");
         Entry entry = owned(worldId, identity);
         var state = entry.metadata.state();
         checkBase(state, baseVersion);
-        if (state.phase() != WorldPhase.COMMITTING) throw conflict("INVALID_PHASE", "Upload has not begun");
+        if (state.phase() != (checkpoint ? WorldPhase.RUNNING : WorldPhase.COMMITTING))
+            throw conflict("INVALID_PHASE", "World phase no longer permits publication");
         long version = baseVersion == null ? 1 : Math.addExact(baseVersion, 1);
         var commits = new ArrayList<>(entry.metadata.commits());
         String committedAt = clock.instant().toString();
-        commits.add(new WorldMetadata.Commit(uploadId, state.owner(), state.epoch(), baseVersion, version, hash, committedAt));
-        var free = new WorldMetadata.State(state.epoch(), WorldPhase.FREE, null, null, version, committedAt, null);
-        var next = new WorldMetadata(worldId, entry.metadata.name(), entry.metadata.createdAt(), free, entry.metadata.cancellations(), commits, entry.metadata.allowOfflinePlayers());
+        commits.add(new WorldMetadata.Commit(uploadId, state.owner(), state.epoch(), baseVersion, version, hash, committedAt, null, checkpoint));
+        var published = checkpoint
+            ? new WorldMetadata.State(state.epoch(), WorldPhase.RUNNING, state.owner(), version, version, committedAt, state.endpoint())
+            : new WorldMetadata.State(state.epoch(), WorldPhase.FREE, null, null, version, committedAt, null);
+        var next = new WorldMetadata(worldId, entry.metadata.name(), entry.metadata.createdAt(), published, entry.metadata.cancellations(), commits, entry.metadata.allowOfflinePlayers());
         // 先淘汰超出容量的旧历史，再移动候选；备份的最小索引必须先落盘。
         next = boundedMetadata(next);
         Path world = root.resolve(worldId);
@@ -867,9 +888,11 @@ public final class WorldStore implements AutoCloseable {
         SnapshotFiles.forceDirectory(snapshots);
         SnapshotFiles.forceDirectory(world);
         persist(entry, next);
-        entry.seen = false;
-        entry.joinReady = false;
-        entry.players = null;
+        if (!checkpoint) {
+            entry.seen = false;
+            entry.joinReady = false;
+            entry.players = null;
+        }
         return version;
     }
 

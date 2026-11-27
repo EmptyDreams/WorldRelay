@@ -9,7 +9,7 @@ import top.kmar.worldrelay.server.protocol.HostEndpoint;
 import java.time.Instant;
 import java.util.*;
 
-/** 所有权、有界提交回执和取消审计一同原子发布；v9 固定世界的登录模式，仍可读取 v1～v8。 */
+/** 所有权、有界提交回执和取消审计一同原子发布。 */
 record WorldMetadata(String worldId, String name, String createdAt, State state, List<Cancellation> cancellations, List<Commit> commits, boolean allowOfflinePlayers) {
 
     WorldMetadata(String worldId, String name, String createdAt, State state, List<Cancellation> cancellations, List<Commit> commits) {
@@ -25,7 +25,12 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
     }
 
     record Commit(String uploadId, Owner owner, long epoch, Long baseVersion, long version, String manifestHash,
-                  String committedAt, Long restoredFromVersion) {
+                  String committedAt, Long restoredFromVersion, boolean checkpoint) {
+
+        Commit(String uploadId, Owner owner, long epoch, Long baseVersion, long version, String manifestHash,
+               String committedAt, Long restoredFromVersion) {
+            this(uploadId, owner, epoch, baseVersion, version, manifestHash, committedAt, restoredFromVersion, false);
+        }
 
         Commit(String uploadId, Owner owner, long epoch, Long baseVersion, long version, String manifestHash, String committedAt) {
             this(uploadId, owner, epoch, baseVersion, version, manifestHash, committedAt, null);
@@ -41,7 +46,7 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
             if (epoch < 1 || version < 1 || (baseVersion != null && baseVersion < 1)
                 || version != (baseVersion == null ? 1 : Math.addExact(baseVersion, 1))
                 || !manifestHash.matches("[0-9a-f]{64}")) throw new IllegalArgumentException("Invalid commit receipt");
-            if (restoredFromVersion != null && (baseVersion == null || restoredFromVersion < 1 || restoredFromVersion > baseVersion))
+            if (restoredFromVersion != null && (checkpoint || baseVersion == null || restoredFromVersion < 1 || restoredFromVersion > baseVersion))
                 throw new IllegalArgumentException("Invalid restore source");
             if (committedAt != null) {
                 // 只验证时间格式，保留回执中的原始字符串。
@@ -162,7 +167,7 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
     }
 
     String toJson() {
-        int format = 9;
+        int format = commits.stream().anyMatch(Commit::checkpoint) ? 10 : 9;
         JsonWriter writer = new JsonWriter().beginObject().name("formatVersion")
             .value(format)
             .name("worldId").value(worldId).name("name").value(name).name("createdAt").value(createdAt)
@@ -216,6 +221,7 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
             writer.name("version").value(commit.version).name("manifestHash").value(commit.manifestHash);
             if (commit.committedAt != null) writer.name("committedAt").value(commit.committedAt);
             if (commit.restoredFromVersion != null) writer.name("restoredFromVersion").value(commit.restoredFromVersion);
+            if (commit.checkpoint) writer.name("checkpoint").value(true);
             writer.endObject();
         }
         writer.endArray();
@@ -275,9 +281,10 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
             if (format < 6 && commits.getFirst().version() != 1) throw new IllegalArgumentException("Incomplete legacy commit history");
             if (format == 8 && cancellations.stream().noneMatch(cancellation -> cancellation.abandonId != null))
                 throw new IllegalArgumentException("Missing abandonment audit");
-        } else if (format == 9) {
+        } else if (format == 9 || format == 10) {
             requireFields(fields, Set.of("formatVersion", "worldId", "name", "createdAt", "state", "cancellations", "commits", "allowOfflinePlayers"));
         } else throw new IllegalArgumentException("Unsupported world metadata version");
+        if (format < 10 && commits.stream().anyMatch(Commit::checkpoint)) throw new IllegalArgumentException("Unexpected checkpoint history");
         return new WorldMetadata(id, name, createdAt, state, cancellations, commits, allowOfflinePlayers);
     }
 
@@ -287,6 +294,7 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
         Owner owner = null;
         long epoch = 0, version = 0;
         Long base = null, restored = null;
+        boolean checkpoint = false;
         reader.beginObject();
         while (reader.hasNext()) {
             String field = reader.nextName();
@@ -300,6 +308,7 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
                 case "manifestHash" -> hash = reader.nextString();
                 case "committedAt" -> at = reader.nextString();
                 case "restoredFromVersion" -> restored = reader.nextLong();
+                case "checkpoint" -> checkpoint = reader.nextBoolean();
                 default -> throw new IllegalArgumentException("Unknown commit field");
             }
         }
@@ -307,8 +316,9 @@ record WorldMetadata(String worldId, String name, String createdAt, State state,
         Set<String> expected = new HashSet<>(Set.of("uploadId", "owner", "epoch", "baseVersion", "version", "manifestHash"));
         if (at != null) expected.add("committedAt");
         if (restored != null) expected.add("restoredFromVersion");
+        if (checkpoint) expected.add("checkpoint");
         requireFields(fields, expected);
-        return new Commit(id, owner, epoch, base, version, hash, at, restored);
+        return new Commit(id, owner, epoch, base, version, hash, at, restored, checkpoint);
     }
 
     private static Cancellation readCancellation(JsonReader reader) {
